@@ -1,47 +1,47 @@
 # [TonUINO-ESP32](http://discourse.voss.earth/t/esp32-port-inkl-webinterface/399)
-_[TonUINO V2.0](https://www.voss.earth/tonuino/) Code für ESP32 mit Erweiterungen, es gibt zu dem Projekt ebenfalls eine [Discourse Seite](http://discourse.voss.earth/)_
+_[TonUINO V2.0](https://www.voss.earth/tonuino/) Code for ESP32 with extensions, there is also [Discourse Seite](http://discourse.voss.earth/)_
 
-**Aktuell Umgesetzt:**
+**Currently implemented:**
   
-  - Webinterface zur Fernsteuerung
-    - Play, Pause, Start, Stop, Lautstärke
-    - Equalizer einstellen
-    - max. Lautstärke einstellen
-    - Ausschalttimer
-    - Einschalttimer
+  - Web interface for remote control
+    - Play, Pause, Start, Stop, Volume
+    - Adjust equalizer
+    - max. Adjust Volume
+    - Off timer
+    - On timer
     
-  - Ambientlight mit WS2812 LED´s
-    - ändern der Farbe über Webinterface
+  - Ambientlight with WS2812 LEDss
+    - change the color via web interface
     
-  - Timer zum Ein- und Ausschalten
-    - Sonnenauf- und Untergang simulation für Einschalttimer
-    - MP3-Wiedergabe beim Ein- / Ausschalten
+  - Timer for switching on and off
+    - Sunrise and sunset simulation for switch-on timer
+    - MP3 playback when switching on / off
     
-  - AP-Modus um WLAN konfigurieren zu können ohne dies (SSID, PW) im Code fest zu verankern
-    - Sprachansage bei Fehler mit der Verbindung
+  - AP mode to configure WLAN without anchoring this (SSID, PW) in the code
+    - Voice message if there is an error with the connection
    
-  - Begrüßung beim Einschalten 
+  - Welcome at startup 
    
-  - Kopfhörererkennung
-    - reduziert die Lautstärke wenn Kopfhörer gesteckt
-    - begrenz die Lautstärke wenn Kopfhörer gesteckt
-    - schaltet auf vorherige Lautstärke zurück wenn Kopfhörer nicht mehr gesteckt
+  - Headphone detection
+    - reduces the volume when headphones plugged
+    - Limit the volume when headphones are plugged
+    - switches to previous volume when headphones are no longer plugged in
     
   - Sprachmenü und Struktur auf Tag erweitert um Ambilight Farbe zu speichern
     
-  - Funktion der Hoch- Runter- Tasten geändert
-    - kurzes Drücken = Lautstärke +/-
-    - langes Drücken = Lied +/-
+  - Function of the up-down keys changed
+    - short press = Volume +/-
+    - long press = Track +/-
     
  **Layout**
  
  
  ![fritzing Layout](https://raw.githubusercontent.com/lrep/TonUINO-ESP32/master/Fritzing/Layout_schema.png)
  
- **Noch offen und geplant:**
+ **Still open and planned:**
  
-  - Speichern der Einstellungen im EEPROM / Flash
-  - Tags verwalten
+  - Saving the settings in EEPROM / Flash
+  - Manage tags
   
   
   
