@@ -27,7 +27,7 @@ _[TonUINO V2.0](https://www.voss.earth/tonuino/) Code for ESP32 with extensions,
     - Limit the volume when headphones are plugged
     - switches to previous volume when headphones are no longer plugged in
     
-  - Sprachmenü und Struktur auf Tag erweitert um Ambilight Farbe zu speichern
+  - Language menu and structure expanded to Tag to save Ambilight color
     
   - Function of the up-down keys changed
     - short press = Volume +/-
