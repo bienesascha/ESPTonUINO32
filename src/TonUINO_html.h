@@ -20,6 +20,7 @@ String page = "<!DOCTYPE html>";
 page += "<html>";
 page += "<head>";
 page += "<title>TonUINO Interface</title>";
+page += "<meta http-equiv='content-type' content='text/html; charset=utf-8'>";
 page += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
 page += "<meta name='author' content='C. Ulbrich'>";
 page += "  <link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css' type='text/css'>";

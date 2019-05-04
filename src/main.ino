@@ -8,6 +8,9 @@
 // some cables and stuff and an old (or new) bookshelf speaker... 
 // and you have the TonUINO!
 //==================================================================
+//
+// https://github.com/bahnfrei/tonuino-sdcard
+
 
 // Used libraries
 #include <WiFi.h>
@@ -40,6 +43,18 @@ int success2 = 0;
 
 bool debug = true; //false // Set to "true" to get debug information via the serial port.
 
+// KY 040
+//========================================================================
+#define CLK 2 // KY 040 A
+#define DT 3 // KY 040 B
+bool A, B, drehen = 0;
+
+// DeepSleep
+//========================================================================
+#define BUTTON_PIN_BITMASK 0x200000000 // 2^33 in hex
+#define DEEPSLEEP_WAKEUP_PIN GPIO_NUM_33
+
+
 //Variables for saving settings
 //========================================================================
 
@@ -54,7 +69,7 @@ unsigned int last_max_Volume;
 #define BRIGHTNESS 32   // brightness  (max 254) 
 #define LED_TYPE WS2811 // I know we are using ws2812, but it's ok!
 #define COLOR_ORDER GRB
-CRGB leds[NUM_LEDS];
+//CRGB leds[NUM_LEDS];
 
 //============Sunrise Variables===========================================
 DEFINE_GRADIENT_PALETTE( sunrise_gp ) {
@@ -233,11 +248,15 @@ byte trailerBlock = 7;
 MFRC522::StatusCode status;
 
 #define buttonPause 25
-#define buttonUp 26
-#define buttonDown 27
+//#define buttonUp 26
+//#define buttonDown 27
+#define buttonUp 34
+#define buttonDown 35
+
 #define busyPin 4
 #define headphonePin 32
-#define dfpMute 33
+//#define dfpMute 33
+#define dfpMute 14
 
 #define LONG_PRESS 1000
 
@@ -361,14 +380,14 @@ void handleRoot() {
         char charBuf[Color.length() + 1];
         Color.toCharArray(charBuf, Color.length() + 1);
         unsigned long col = strtol(charBuf, &ptr, 16);
-        fill_solid(leds, NUM_LEDS, col); // Change color of all LEDs
-        FastLED.show();
+        // fill_solid(leds, NUM_LEDS, col); // Change color of all LEDs
+        // FastLED.show();
       }
       else if (server.argName(i) == "LED_bri") {
         Serial.println("The brightness of the LEDs is changed ");
         Serial.println("brightness = " + server.arg(i));
-        FastLED.setBrightness(server.arg(i).toInt());
-        FastLED.show();
+        // FastLED.setBrightness(server.arg(i).toInt());
+        // FastLED.show();
       }
       else if (server.argName(i) == "cb_SleepLight_on") {
         //CODE HERE
@@ -478,11 +497,11 @@ void handleEQ_JAZZ() {
 void sunrise() {
 
   if (debug) Serial.println("sunrise() is running");
-  CRGBPalette256 sunrisePal = sunrise_gp;
-  CRGB color = ColorFromPalette(sunrisePal, heatIndex);
+  // CRGBPalette256 sunrisePal = sunrise_gp;
+  // CRGB color = ColorFromPalette(sunrisePal, heatIndex);
   // fill the entire strip with the current color
-  fill_solid(leds, NUM_LEDS, color);
-  FastLED.show();
+  // fill_solid(leds, NUM_LEDS, color);
+  // FastLED.show();
   heatIndex++;
   if (heatIndex == 255) {
     heatIndex = 0;
@@ -513,6 +532,7 @@ void TimeCompare() {
       TMP_OFFTIME = true;
     }
     Serial.println("Playback was stopped by the OFF timer.");
+    //esp_deep_sleep_start();
   }
 
   else if ((TMR_ON_MM == NTP_MM) and (TMP_ONTIME == false) and (TMR_ON_HH == NTP_HH)) {
@@ -616,6 +636,51 @@ int WiFi_AccessPointStart(char* AccessPointNetworkSSID)
   return 1;
 }
 
+//*************** Lautstärkeregelung über Poti KY40  ***************
+
+void Lauter(){
+  if (drehen) delay (1); // entprellen
+  if(digitalRead(CLK) != A) {
+    A = !A;
+    if ( A && !B && myDFPlayer.readVolume() != max_Volume)
+      myDFPlayer.volumeUp();
+    drehen = false; // entprellen
+  }
+}
+
+void Leiser(){
+  if (drehen) delay (1);
+  if(digitalRead(DT) != B) {
+    B = !B;
+    if(B && !A && myDFPlayer.readVolume() !=0)
+      myDFPlayer.volumeDown();
+    drehen = false;
+  }
+}
+
+//***************************************************************
+
+/****************************************************************
+Method to print the reason by which ESP32
+has been awaken from sleep
+*/
+void print_wakeup_reason(){
+  esp_sleep_wakeup_cause_t wakeup_reason;
+
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch(wakeup_reason)
+  {
+    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
+    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
+    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+  }
+}
+//***************************************************************
+
 //==========================================================================================
 // Setup
 //==========================================================================================
@@ -640,10 +705,10 @@ void setup() {
   //WS2812b Configure
   //===================================================================================
   // tell FastLED about the LED strip configuration
-  FastLED.addLeds<WS2812B, DATA_PIN, RGB>(leds, NUM_LEDS);
-  FastLED.setBrightness(BRIGHTNESS);  // Adjust the brightness
-  fill_solid(leds, NUM_LEDS, CRGB::Black); // Change color of all LEDs
-  FastLED.show();
+  // FastLED.addLeds<WS2812B, DATA_PIN, RGB>(leds, NUM_LEDS);
+  // FastLED.setBrightness(BRIGHTNESS);  // Adjust the brightness
+  // fill_solid(leds, NUM_LEDS, CRGB::Black); // Change color of all LEDs
+  // FastLED.show();
 
   //===================================================================================
 
@@ -651,6 +716,13 @@ void setup() {
   SPI.begin();
   mySoftwareSerial.begin(9600, SERIAL_8N1, 16, 17);  // speed, type, RX, TX
   randomSeed(analogRead(33)); // Initialize the random number generator
+
+  //DeepSleep
+  //===================================================================================
+  //print_wakeup_reason();
+  //esp_sleep_enable_ext0_wakeup(DEEPSLEEP_WAKEUP_PIN,1); //1 = High, 0 = Low
+  //===================================================================================
+
   mfrc522.PCD_Init();
   mfrc522.PCD_DumpVersionToSerial();
 
@@ -662,6 +734,10 @@ void setup() {
   pinMode(buttonPause, INPUT_PULLUP);
   pinMode(buttonUp, INPUT_PULLUP);
   pinMode(buttonDown, INPUT_PULLUP);
+
+  // KY 040
+  //pinMode(CLK, INPUT_PULLUP); attachInterrupt(0, Lauter, CHANGE);
+  //pinMode(DT, INPUT_PULLUP); attachInterrupt(1, Leiser, CHANGE);
 
   // Busy Pin
   pinMode(busyPin, INPUT);
@@ -771,11 +847,11 @@ void setup() {
   // try to connect to the LAN
   success = WiFi_RouterNetworkConnect(txtSSID, txtPassword, txtHostname);
   if (success == 1) {
-    fill_solid(leds, NUM_LEDS, CRGB::Blue); // Change color of all LEDs
-    FastLED.show();
+    // fill_solid(leds, NUM_LEDS, CRGB::Blue); // Change color of all LEDs
+    // FastLED.show();
   } else {
-    fill_solid(leds, NUM_LEDS, CRGB::Red); // Change color of all LEDs
-    FastLED.show();
+    // fill_solid(leds, NUM_LEDS, CRGB::Red); // Change color of all LEDs
+    // FastLED.show();
   }
 
   // Start access point"
@@ -846,7 +922,7 @@ void setup() {
 //==========================================================================================
 void loop() {
   do {
-
+    drehen = true;  // zurücksetzen entprellvariable
     if (xSemaphoreTake(timerSemaphore, 0) == pdTRUE) { //Timer Interrupt Routine
       uint32_t isrCount = 0, isrTime = 0;
       // Read the interrupt count and time
@@ -899,8 +975,8 @@ void loop() {
       if (ignorePauseButton == false) {
         if (isPlaying()) {
           myDFPlayer.pause();
-          fill_solid(leds, NUM_LEDS, CRGB::Black); // Change color of all LEDs
-          FastLED.show();
+          // fill_solid(leds, NUM_LEDS, CRGB::Black); // Change color of all LEDs
+          // FastLED.show();
           startSR = false;
           heatIndex = 0;
         } else {
@@ -926,36 +1002,36 @@ void loop() {
       ignorePauseButton = true;
     }
 
-    if (upButton.pressedFor(LONG_PRESS)) {
-      Serial.println(F("Volume Up"));
-      myDFPlayer.volumeUp();
-      nextTrack();
-      ignoreUpButton = true;
-      delay(1000);
-    } else if (upButton.wasReleased()) {
-      if (!ignoreUpButton) {
-        //nextTrack();
-        if (myDFPlayer.readVolume() <= max_Volume) {
-          myDFPlayer.volumeUp();
-        }
-      } else {
-        ignoreUpButton = false;
-      }
-    }
+    // if (upButton.pressedFor(LONG_PRESS)) {
+    //   Serial.println(F("Volume Up"));
+    //   myDFPlayer.volumeUp();
+    //   nextTrack();
+    //   ignoreUpButton = true;
+    //   delay(1000);
+    // } else if (upButton.wasReleased()) {
+    //   if (!ignoreUpButton) {
+    //     //nextTrack();
+    //     if (myDFPlayer.readVolume() <= max_Volume) {
+    //       myDFPlayer.volumeUp();
+    //     }
+    //   } else {
+    //     ignoreUpButton = false;
+    //   }
+    // }
 
-    if (downButton.pressedFor(LONG_PRESS)) {
-      Serial.println(F("Volume Down"));
-      myDFPlayer.volumeDown();
-      previousTrack();
-      ignoreDownButton = true;
-      delay(1000);
-    } else if (downButton.wasReleased()) {
-      if (!ignoreDownButton)
-        //previousTrack();
-        myDFPlayer.volumeDown();
-      else
-        ignoreDownButton = false;
-    }
+    // if (downButton.pressedFor(LONG_PRESS)) {
+    //   Serial.println(F("Volume Down"));
+    //   myDFPlayer.volumeDown();
+    //   previousTrack();
+    //   ignoreDownButton = true;
+    //   delay(1000);
+    // } else if (downButton.wasReleased()) {
+    //   if (!ignoreDownButton)
+    //     //previousTrack();
+    //     myDFPlayer.volumeDown();
+    //   else
+    //     ignoreDownButton = false;
+    // }
 
     // End of the buttons
   } while (!mfrc522.PICC_IsNewCardPresent());
@@ -977,16 +1053,16 @@ void loop() {
         track = random(1, numTracksInFolder + 1);
         Serial.println(track);
         myDFPlayer.playFolder(myCard.folder, track);
-        fill_solid(leds, NUM_LEDS, myCard.color); // Change color of all LEDs
-        FastLED.show();
+        // fill_solid(leds, NUM_LEDS, myCard.color); // Change color of all LEDs
+        // FastLED.show();
       }
       // Album mode: play complete folder
       if (myCard.mode == 2) {
         Serial.println(F("Album mode -> play complete folder"));
         track = 1;
         myDFPlayer.playFolder(myCard.folder, track);
-        fill_solid(leds, NUM_LEDS, myCard.color); // Change color of all LEDs
-        FastLED.show();
+        // fill_solid(leds, NUM_LEDS, myCard.color); // Change color of all LEDs
+        // FastLED.show();
       }
       // Party Mode: Folder in random order
       if (myCard.mode == 3) {
@@ -994,7 +1070,7 @@ void loop() {
           F("Party Mode -> play folders in random order"));
         track = random(1, numTracksInFolder + 1);
         myDFPlayer.playFolder(myCard.folder, track);
-        fill_solid(leds, NUM_LEDS, myCard.color); // Change color of all LEDs
+        // fill_solid(leds, NUM_LEDS, myCard.color); // Change color of all LEDs
       }
       // Single mode: play a file from the folder
       if (myCard.mode == 4) {
@@ -1002,8 +1078,8 @@ void loop() {
           F("Single mode -> play a file from the folder"));
         track = myCard.special;
         myDFPlayer.playFolder(myCard.folder, track);
-        fill_solid(leds, NUM_LEDS, myCard.color); // Change color of all LEDs
-        FastLED.show();
+        // fill_solid(leds, NUM_LEDS, myCard.color); // Change color of all LEDs
+        // FastLED.show();
       }
       // Audiobook mode: play complete folder and remember progress
       if (myCard.mode == 5) {
@@ -1011,8 +1087,8 @@ void loop() {
         track = EEPROM.read(myCard.folder);
         if (track == 0)track = 1;
         myDFPlayer.playFolder(myCard.folder, track);
-        fill_solid(leds, NUM_LEDS, myCard.color); // Change color of all LEDs
-        FastLED.show();
+        // fill_solid(leds, NUM_LEDS, myCard.color); // Change color of all LEDs
+        // FastLED.show();
       }
     }
 
@@ -1155,29 +1231,29 @@ void setupCard() {
 
   // Interrogate color
   myCard.color = voiceMenu(7, 600, 600);
-  switch (myCard.color) {
-    case 4:
-      myCard.color = CRGB::LawnGreen;
-      break;
-    case 3:
-      myCard.color = CRGB::Yellow;
-      break;
-    case 6:
-      myCard.color = CRGB::White;
-      break;
-    case 7:
-      myCard.color = CRGB::Plum;
-      break;
-    case 2:
-      myCard.color = CRGB::OrangeRed;
-      break;
-    case 5:
-      myCard.color = CRGB::LightSkyBlue;
-      break;
-    case 1:
-      myCard.color = CRGB::Black;
-      break;
-  }
+  // switch (myCard.color) {
+  //   case 4:
+  //     myCard.color = CRGB::LawnGreen;
+  //     break;
+  //   case 3:
+  //     myCard.color = CRGB::Yellow;
+  //     break;
+  //   case 6:
+  //     myCard.color = CRGB::White;
+  //     break;
+  //   case 7:
+  //     myCard.color = CRGB::Plum;
+  //     break;
+  //   case 2:
+  //     myCard.color = CRGB::OrangeRed;
+  //     break;
+  //   case 5:
+  //     myCard.color = CRGB::LightSkyBlue;
+  //     break;
+  //   case 1:
+  //     myCard.color = CRGB::Black;
+  //     break;
+  // }
 
 
   // Audiobook Mode -> Set progress in EEPROM to 1
