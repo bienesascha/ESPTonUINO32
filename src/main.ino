@@ -302,6 +302,32 @@ void SpiffServerSetup(){
     request->send(200, "text/plain", String(ESP.getFreeHeap()));
   });
 
+  server.on("/play", HTTP_GET, [](AsyncWebServerRequest *request){
+    myDFPlayer.play();
+    request->send(200, "text/plain", "PLAY");
+  });
+
+server.on("/pause", HTTP_GET, [](AsyncWebServerRequest *request){
+    myDFPlayer.pause();
+    request->send(200, "text/plain", "PAUSE");
+  });
+
+  server.on("/sleep", HTTP_GET, [](AsyncWebServerRequest *request){
+    //myDFPlayer.sleep();
+    //delay(100);
+    //esp_deep_sleep_start();
+    request->send(200, "text/plain", "SLEEP");
+  });
+
+    server.on("/playfolder", HTTP_GET, [] (AsyncWebServerRequest *request) {
+        String message;
+        if (request->hasParam(PARAM_MESSAGE)) {
+            message = request->getParam(PARAM_MESSAGE)->value();
+            myDFPlayer.playFolder(message.toInt(), 1);
+        }
+        request->send(200, "text/plain", "Hello, GET: " + message);
+    });
+
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", getIndexHTML());
   });
