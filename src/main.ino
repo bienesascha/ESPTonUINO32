@@ -189,6 +189,13 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
   }
 }
 
+String getIndexHTML(){
+  String ret = F("<!DOCTYPE html><html><body><h2>HTML Links</h2><a href='");
+  ret+=WiFi.localIP();
+  ret+=F("/edit'>Edit Pages</a></body></html>");
+  return ret;
+}
+
 void SpiffServerSetup(){
     SPIFFS.begin();
 
@@ -206,6 +213,9 @@ void SpiffServerSetup(){
     request->send(200, "text/plain", String(ESP.getFreeHeap()));
   });
 
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "text/html", getIndexHTML());
+  });
   server.serveStatic("/", SPIFFS, "/").setDefaultFile("index.htm");
 
   server.onNotFound([](AsyncWebServerRequest *request){
@@ -451,9 +461,11 @@ void DFPlayerSetup(){
   // Serial.println(myDFPlayer.readFileCountsInFolder(2)); //read fill counts in folder SD:/03
   // Serial.println(F("--------------------"));
   // delay(2000);
+  
 }
 
 void WIFISetup(){
+     
     //wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
     //wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");
     
@@ -562,6 +574,9 @@ void setup() {
     setupNFC();
     OTASetup();
     deepSleepSETUP();
+    // myDFPlayer.volume(15);  //Set volume value (0~30).
+    // delay(50);
+    // Serial.println(myDFPlayer.readVolume());
     myDFPlayer.playMp3Folder(400);
     for(int i=0;i<20;i++){delay(100);}
     

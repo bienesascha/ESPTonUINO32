@@ -16,7 +16,7 @@ union ArrayToInteger {
 #define PIN_B   25 //ky-040 dt  pin,             add 100nF/0.1uF capacitors between pin & ground!!!
 #define BUTTON  27 //ky-040 sw  pin, interrupt & add 100nF/0.1uF capacitors between pin & ground!!!
 
-int max_Volume = 15;
+int max_Volume = 29;
 
 #define DEEPSLEEP_WAKEUP_PIN GPIO_NUM_33
 
