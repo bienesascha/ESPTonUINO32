@@ -23,3 +23,5 @@ int max_Volume = 29;
 #define AUTOSLEEP_TIME 900000UL //15min
 
 bool isplaying=false;
+
+const char* PARAM_MESSAGE = "folder";
