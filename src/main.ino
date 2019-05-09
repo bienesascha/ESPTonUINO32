@@ -279,9 +279,14 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
 }
 
 String getIndexHTML(){
-  String ret = F("<!DOCTYPE html><html><body><h2><a href='");
-  //ret+=WiFi.localIP();
-  ret+=F("/edit'>Edit Pages</a></h2></body></html>");
+  String ret = F("<!DOCTYPE html><html><body>");
+  ret+=F("<h2><a href='/edit'>Edit Pages</a></h2><br>");
+  ret+=F("<h2><a href='/heap'>Heap</a></h2><br>");
+  ret+=F("<h2><a href='/play'>play</a></h2><br>");
+  ret+=F("<h2><a href='/pause'>pause</a></h2><br>");
+  ret+=F("<h2><a href='/sleep'>Sleep</a></h2><br>");
+  ret+=F("<h2><a href='/playfolder'>playfolder</a></h2>");
+  ret+=F("</body></html>");
   return ret;
 }
 
@@ -313,10 +318,11 @@ server.on("/pause", HTTP_GET, [](AsyncWebServerRequest *request){
   });
 
   server.on("/sleep", HTTP_GET, [](AsyncWebServerRequest *request){
-    //myDFPlayer.sleep();
-    //delay(100);
-    //esp_deep_sleep_start();
     request->send(200, "text/plain", "SLEEP");
+    //myDFPlayer.sleep();
+    delay(100);
+    esp_deep_sleep_start();
+    
   });
 
     server.on("/playfolder", HTTP_GET, [] (AsyncWebServerRequest *request) {
@@ -494,9 +500,9 @@ bool playCard(int id){
 }
 
 void DFPlayerSetup(){
-      mySoftwareSerial.begin(9600, SERIAL_8N1, 16, 17);  // speed, type, RX, TX
+    mySoftwareSerial.begin(9600, SERIAL_8N1, 16, 17);  // speed, type, RX, TX
     myDFPlayer.begin(mySoftwareSerial, false, true);
-  
+    
     if (!myDFPlayer.begin(mySoftwareSerial)) {  //Use softwareSerial to communicate with mp3.
 
      Serial.println(myDFPlayer.readType(),HEX);
@@ -558,7 +564,7 @@ void DFPlayerSetup(){
 void WIFISetup(){
 
     WiFi.onEvent(WiFiEvent);
-    
+    WiFi.begin("","");
     //wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
     //wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");
     
@@ -645,7 +651,7 @@ void print_wakeup_reason(){
 void deepSleepSETUP(){
    timer.set_max_delay(AUTOSLEEP_TIME);
    timer.set();
-    //esp_sleep_enable_ext0_wakeup(DEEPSLEEP_WAKEUP_PIN,1); //1 = High, 0 = Low
+   esp_sleep_enable_ext0_wakeup(DEEPSLEEP_WAKEUP_PIN,1); //1 = High, 0 = Low
 }
 
 

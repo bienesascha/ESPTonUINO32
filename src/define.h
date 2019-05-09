@@ -18,7 +18,7 @@ union ArrayToInteger {
 
 int max_Volume = 29;
 
-#define DEEPSLEEP_WAKEUP_PIN GPIO_NUM_33
+#define DEEPSLEEP_WAKEUP_PIN GPIO_NUM_14
 
 #define AUTOSLEEP_TIME 900000UL //15min
 
