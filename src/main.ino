@@ -189,7 +189,8 @@ void loadJSON(){
     DeserializationError error=deserializeJson(doc, file);
     if (error)
         Serial.println(F("Failed to read file, using default configuration"));
-
+    //Print to serial
+    //serializeJson(doc, Serial);
     file.close();
     //deserializeJson(doc, json);
 }
@@ -320,6 +321,11 @@ server.on("/pause", HTTP_GET, [](AsyncWebServerRequest *request){
   server.on("/sleep", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/plain", "SLEEP");
     //myDFPlayer.sleep();
+    Serial.println("*******************************");
+    Serial.println("    DEEP SLEEP:          ");
+    Serial.println("*******************************");
+    digitalWrite(GND_SWI_PIN,LOW);
+    myDFPlayer.pause();
     delay(100);
     esp_deep_sleep_start();
     
@@ -484,9 +490,11 @@ uint8_t getID() {
   return 1;
 }
 
-bool playCard(int id){
+bool playCard(uint32_t id){
     bool ret=false;
     myCard.cardID=id;
+    //Serial.print(F("CARD ID: "));
+    //Serial.println(String(id));
     myCard.folder=doc[String(id)];
     //Serial.print(F("Play Folder: "));
     //Serial.println(myCard.folder);
@@ -564,7 +572,7 @@ void DFPlayerSetup(){
 void WIFISetup(){
 
     WiFi.onEvent(WiFiEvent);
-    WiFi.begin("","");
+    WiFi.begin("", "");
     //wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
     //wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");
     
@@ -661,9 +669,16 @@ void setupKY040(){
   attachInterrupt(digitalPinToInterrupt(PIN_A),  encoderISR,       CHANGE);  //call encoderISR()       every high->low or low->high changes
   attachInterrupt(digitalPinToInterrupt(BUTTON), encoderButtonISR, FALLING); //call encoderButtonISR() every high->low              changes
 }
+
+void setupGND_SWI(){
+  pinMode(GND_SWI_PIN,OUTPUT);
+  digitalWrite(GND_SWI_PIN,HIGH);
+}
+
 void setup() {
     Serial.begin(115200);
     Serial.println("Booting");
+    setupGND_SWI();
     print_wakeup_reason();  
     setupKY040();
     WIFISetup();
@@ -685,7 +700,7 @@ void setup() {
 
 
 void loop() {
-    bool knowncard=false;
+    bool knowncard=true;
     if(getID()){
         converter.array[0]=readCard[0];converter.array[1]=readCard[1];converter.array[2]=readCard[2];converter.array[3]=readCard[3];
         if(myCard.cardID!=converter.integer){
@@ -724,8 +739,10 @@ void loop() {
       Serial.println("Timer abgelaufen, DEEP SLEEP: ");
       Serial.println("*******************************");
       //myDFPlayer.sleep();
-      //delay(100);
-      //esp_deep_sleep_start();
+      digitalWrite(GND_SWI_PIN,LOW);
+      myDFPlayer.pause();
+      delay(100);
+      esp_deep_sleep_start();
     }
 
     if (position < encoder.getPosition())

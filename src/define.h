@@ -16,11 +16,14 @@ union ArrayToInteger {
 #define PIN_B   25 //ky-040 dt  pin,             add 100nF/0.1uF capacitors between pin & ground!!!
 #define BUTTON  27 //ky-040 sw  pin, interrupt & add 100nF/0.1uF capacitors between pin & ground!!!
 
+//http://hobbycomponents.com/images/forum/Wemos_Lolin_D32_Diagram_HCWEMO0014.png
+#define GND_SWI_PIN GPIO_NUM_12
+
 int max_Volume = 29;
 
 #define DEEPSLEEP_WAKEUP_PIN GPIO_NUM_14
 
-#define AUTOSLEEP_TIME 900000UL //15min
+#define AUTOSLEEP_TIME 420000 //900000UL //15min
 
 bool isplaying=false;
 
