@@ -1,0 +1,14 @@
+{
+    "terminal.integrated.env.windows": {
+        "PATH": "C:\\Users\\mwulf\\.platformio\\penv\\Scripts;C:\\Users\\mwulf\\.platformio\\penv;C:\\Program Files (x86)\\Common Files\\Oracle\\Java\\javapath;C:\\ProgramData\\Oracle\\Java\\javapath;C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common;C:\\WINDOWS\\system32;C:\\WINDOWS;C:\\WINDOWS\\System32\\Wbem;C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\;C:\\Program Files (x86)\\Bitvise SSH Client;C:\\Program Files\\PuTTY\\;C:\\Program Files (x86)\\Intel\\Platform Flash Tool Lite;C:\\WINDOWS\\System32\\OpenSSH\\;C:\\Program Files\\Git\\cmd;C:\\Users\\mwulf\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Users\\mwulf\\AppData\\Local\\Programs\\Microsoft VS Code\\bin;C:\\Users\\mwulf\\AppData\\Local\\GitHubDesktop\\bin;C:\\Program Files (x86)\\Common Files\\Oracle\\Java\\javapath;C:\\ProgramData\\Oracle\\Java\\javapath;C:\\Program Files (x86)\\NVIDIA Corporation\\PhysX\\Common;C:\\WINDOWS\\system32;C:\\WINDOWS;C:\\WINDOWS\\System32\\Wbem;C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\;C:\\Program Files (x86)\\Bitvise SSH Client;C:\\Program Files\\PuTTY\\;C:\\Program Files (x86)\\Intel\\Platform Flash Tool Lite;C:\\WINDOWS\\System32\\OpenSSH\\;C:\\Program Files\\Git\\cmd;C:\\Users\\mwulf\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Users\\mwulf\\AppData\\Local\\Programs\\Microsoft VS Code\\bin;C:\\Users\\mwulf\\AppData\\Local\\GitHubDesktop\\bin",
+        "PLATFORMIO_CALLER": "vscode"
+    },
+    "files.associations": {
+        "array": "cpp",
+        "deque": "cpp",
+        "*.tcc": "cpp",
+        "string": "cpp",
+        "unordered_map": "cpp",
+        "vector": "cpp"
+    }
+}
