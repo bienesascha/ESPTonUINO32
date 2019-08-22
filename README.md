@@ -1,5 +1,9 @@
 # [TonUINO-ESP32](http://discourse.voss.earth/t/esp32-port-inkl-webinterface/399)
 _[TonUINO V2.0](https://www.voss.earth/tonuino/) Code for ESP32 with extensions, there is also [Discourse Seite](http://discourse.voss.earth/)_
+_TonUNI-ESP32 V3.1 by C.Ulbrich
+_ESPTonUINO V3.1.1 by M.Schwager
+
+**actual under development**
 
 **Currently implemented:**
   
@@ -32,9 +36,11 @@ _[TonUINO V2.0](https://www.voss.earth/tonuino/) Code for ESP32 with extensions,
   - Function of the up-down keys changed
     - short press = Volume +/-
     - long press = Track +/-
+
+  - Viual Studio Code mit platformio-code
     
- **Layout**
- 
+ **Hardware / Layout**
+  (http://hobbycomponents.com/images/forum/Wemos_Lolin_D32_Diagram_HCWEMO0014.png)
  
  ![fritzing Layout](https://raw.githubusercontent.com/lrep/TonUINO-ESP32/master/Fritzing/Layout_schema.png)
  
@@ -43,5 +49,8 @@ _[TonUINO V2.0](https://www.voss.earth/tonuino/) Code for ESP32 with extensions,
   - Saving the settings in EEPROM / Flash
   - Manage tags
   
+  
+
+
   
   

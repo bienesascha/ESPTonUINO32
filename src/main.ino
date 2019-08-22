@@ -1,50 +1,128 @@
+//==================================================================
+// TonUINO V3.2.1 of ESP32 Basis
+// Original V2.0: T. Voss, Erweitert V3.0: C. Ulbrich
+//------------------------------------------------------------------
+// the DIY jukebox (not only) for kids
+//
+// Take an Arduino, an MP3 module, an RFID reader, a micro SD card,
+// some cables and stuff and an old (or new) bookshelf speaker...
+// and you have the TonUINO!
+//==================================================================
 
-#include "define.h"
+// Used libraries
+
 #include <WiFi.h>
-#include <ESPmDNS.h>
+#include <NTPClient.h>
 #include <WiFiUdp.h>
-#include <ArduinoOTA.h>
-#include <WiFiMulti.h>
+#include "TonUINO_html.h"         // German version of html page
+#include "TonUINO.h"  
+#include <Arduino.h>
 #include "DFRobotDFPlayerMini.h"
-#include <ArduinoJson.h>
-#include <SPI.h>        // RC522 Module uses SPI protocol
-#include <MFRC522.h>  // Library for Mifare RC522 Devices
-#include <ESPAsyncWebServer.h>
-#include <SPIFFSEditor.h>
-#include "SPIFFS.h"
-#include "myTimer.h"
-#include <RotaryEncoder.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <EEPROM.h>
+#include <JC_Button.h>
+#include <math.h>
+#include <FastLED.h>
+#include <Update.h>
+#include <WebServer.h>
+#include <Preferences.h>
+#include "define.h"
+
+// EEPROM Storage *NVS*
+// EEPROM_SIZE = EEPROM.length(); KO for ESP32
+#define EEPROM_SIZE 4096
+Preferences preferences;
+int timeout = 20;
+
+//========================================================================
+// Only variables for testing
+int l = 0;
+bool headphoneIn = 1; //0;
+int success = 0;
+int success2 = 0;
+
+bool debug = false; //false // Set to "true" to get debug information via the serial port.
+
+//Variables for saving settings
+//========================================================================
+unsigned long last_color = 0xFFFFFF;
+unsigned int last_Volume;
+unsigned int last_max_Volume;
+
+CRGB leds[NUM_LEDS];
+
+//============Sunrise Variables===========================================
+DEFINE_GRADIENT_PALETTE( sunrise_gp ) {
+  0,     0,  0,  0,             // black
+  128,   240,  0,  0,           // red
+  224,   240, 240,  0,          // yellow
+  255,   128, 128, 240
+}; //very bright blue
+static uint16_t heatIndex = 0; // start out at 0
+
+//========================================================================
+//NTP Variables
+WebServer server(80);
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
 
 
-void nextTrack();
-
-WiFiMulti wifiMulti;
-
-card myCard;
-
-ArrayToInteger converter; //Create a converter
-
-myTimer timer;
-
-int16_t position = 0;
-
-RotaryEncoder encoder(PIN_A, PIN_B, BUTTON);
 
 
+//========================================================================
+// Added code line to PCD_Init() (MFRC522.cpp) :
+//  PCD_WriteRegister(RFCfgReg, (0x07<<4)); // Set Rx Gain to max
+// Before :
+//  PCD_AntennaOn();
+//========================================================================
 
 
+//Created object for communication with the module
+MFRC522 mfrc522 = MFRC522(SS_PIN, RESET_PIN); // Create instance
 
-void encoderISR()
-{
-  encoder.readAB();
+Button pauseButton(buttonPause);
+Button upButton(buttonUp, 100);
+Button downButton(buttonDown, 100);
+bool ignorePauseButton = false;
+bool ignoreUpButton = false;
+bool ignoreDownButton = false;
+
+//=======================Functions Declaration==============================
+nfcTagObject myCard;
+bool knownCard = false;
+uint16_t numTracksInFolder;
+uint16_t track;
+uint64_t chipid;
+
+MFRC522::MIFARE_Key key;
+bool successRead;
+byte sector = 1;
+byte blockAddr = 4;
+byte trailerBlock = 7;
+MFRC522::StatusCode status;
+
+uint8_t numberOfCards = 0;
+
+//====================Timer Declaration=====================================
+hw_timer_t * timer = NULL;
+volatile SemaphoreHandle_t timerSemaphore;
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+
+volatile uint32_t isrCounter = 0;
+volatile boolean isrRead = true;
+
+void IRAM_ATTR onTimer() {
+  // Increment the counter and set the time of ISR
+  portENTER_CRITICAL_ISR(&timerMux);
+  isrCounter++;
+  isrRead = false;
+  portEXIT_CRITICAL_ISR(&timerMux);
+  // Give a semaphore that we can check in the loop
+  xSemaphoreGiveFromISR(timerSemaphore, NULL);
+  // It is safe to use digitalRead/Write here if you want to toggle an output
 }
 
-void encoderButtonISR()
-{
-  encoder.readPushButton();
-}
-
-//= myDFPlayer.readFileCountsInFolder(myCard.folder);
 // implement a notification class,
 // its member methods will get called
 //
@@ -55,6 +133,7 @@ class Mp3Notify {
       Serial.println();
       Serial.print("Com Error ");
       Serial.println(errorCode);
+      switchOnLeds(NUM_LEDS, KO_COLOR );
     }
     static void OnPlayFinished(uint16_t track) {
       Serial.print("Track finished");
@@ -70,369 +149,1309 @@ class Mp3Notify {
     }
     static void OnCardRemoved(uint16_t code) {
       Serial.println(F("SD card removed "));
+      switchOnLeds(NUM_LEDS, KO_COLOR );
     }
 };
-
-//Set Pins for RC522 Module
-const int resetPin = 22; // Reset pin
-const int ssPin = 21;    // Slave select pin
-
-//Created object for communication with the module
-MFRC522 mfrc522 = MFRC522(ssPin, resetPin); // Create instance
-byte readCard[4];   // Stores scanned ID read from RFID Module
-
-AsyncWebServer server(80);
-AsyncWebSocket ws("/ws");
-AsyncEventSource events("/events");
-
 
 HardwareSerial mySoftwareSerial(2);
 DFRobotDFPlayerMini myDFPlayer;
 
-const size_t capacity = JSON_OBJECT_SIZE(40) + 20;
-DynamicJsonDocument doc(capacity);
+// Unfortunately, the module can not play a queue
+static void nextTrack() {
+  if (knownCard == false)
+    // When a new card is learned, the end of a track should not be processed
+    return;
 
-
-
-void WiFiEvent(WiFiEvent_t event)
-{
-    Serial.printf("[WiFi-event] event: %d\n", event);
-
-    switch (event) {
-        case SYSTEM_EVENT_WIFI_READY: 
-            Serial.println("WiFi interface ready");
-            break;
-        case SYSTEM_EVENT_SCAN_DONE:
-            Serial.println("Completed scan for access points");
-            break;
-        case SYSTEM_EVENT_STA_START:
-            Serial.println("WiFi client started");
-            break;
-        case SYSTEM_EVENT_STA_STOP:
-            Serial.println("WiFi clients stopped");
-            break;
-        case SYSTEM_EVENT_STA_CONNECTED:
-            Serial.println("Connected to access point");
-            break;
-        case SYSTEM_EVENT_STA_DISCONNECTED:
-            Serial.println("Disconnected from WiFi access point");
-            break;
-        case SYSTEM_EVENT_STA_AUTHMODE_CHANGE:
-            Serial.println("Authentication mode of access point has changed");
-            break;
-        case SYSTEM_EVENT_STA_GOT_IP:
-            Serial.print("Obtained IP address: ");
-            Serial.println(WiFi.localIP());
-            break;
-        case SYSTEM_EVENT_STA_LOST_IP:
-            Serial.println("Lost IP address and IP address is reset to 0");
-            break;
-        case SYSTEM_EVENT_STA_WPS_ER_SUCCESS:
-            Serial.println("WiFi Protected Setup (WPS): succeeded in enrollee mode");
-            break;
-        case SYSTEM_EVENT_STA_WPS_ER_FAILED:
-            Serial.println("WiFi Protected Setup (WPS): failed in enrollee mode");
-            break;
-        case SYSTEM_EVENT_STA_WPS_ER_TIMEOUT:
-            Serial.println("WiFi Protected Setup (WPS): timeout in enrollee mode");
-            break;
-        case SYSTEM_EVENT_STA_WPS_ER_PIN:
-            Serial.println("WiFi Protected Setup (WPS): pin code in enrollee mode");
-            break;
-        case SYSTEM_EVENT_AP_START:
-            Serial.println("WiFi access point started");
-            break;
-        case SYSTEM_EVENT_AP_STOP:
-            Serial.println("WiFi access point  stopped");
-            break;
-        case SYSTEM_EVENT_AP_STACONNECTED:
-            Serial.println("Client connected");
-            break;
-        case SYSTEM_EVENT_AP_STADISCONNECTED:
-            Serial.println("Client disconnected");
-            break;
-        case SYSTEM_EVENT_AP_STAIPASSIGNED:
-            Serial.println("Assigned IP address to client");
-            break;
-        case SYSTEM_EVENT_AP_PROBEREQRECVED:
-            Serial.println("Received probe request");
-            break;
-        case SYSTEM_EVENT_GOT_IP6:
-            Serial.println("IPv6 is preferred");
-            break;
-        case SYSTEM_EVENT_ETH_START:
-            Serial.println("Ethernet started");
-            break;
-        case SYSTEM_EVENT_ETH_STOP:
-            Serial.println("Ethernet stopped");
-            break;
-        case SYSTEM_EVENT_ETH_CONNECTED:
-            Serial.println("Ethernet connected");
-            break;
-        case SYSTEM_EVENT_ETH_DISCONNECTED:
-            Serial.println("Ethernet disconnected");
-            break;
-        case SYSTEM_EVENT_ETH_GOT_IP:
-            Serial.println("Obtained IP address");
-            Serial.println("IP address: ");
-            Serial.println(WiFi.localIP());
-            break;
-    }
+  if (myCard.mode == 1) {
+    Serial.println(F("Radio play mode is active -> save power"));
+    myDFPlayer.sleep();
   }
-
-
-
-void loadJSON(){
-    //const char* json = "{\"123798\":1,\"484856\":2}";
-    const char *filename = "/config.txt";  // <- SD library uses 8.3 filenames
-    File file = SPIFFS.open(filename);
-    DeserializationError error=deserializeJson(doc, file);
-    if (error)
-        Serial.println(F("Failed to read file, using default configuration"));
-    //Print to serial
-    //serializeJson(doc, Serial);
-    file.close();
-    //deserializeJson(doc, json);
+  if (myCard.mode == 2) {
+    if (track != numTracksInFolder) {
+      track = track + 1;
+      playFolder(myCard.folder, track);
+      Serial.print(F("Album mode is active -> next track: "));
+      Serial.print(track);
+    } else
+      myDFPlayer.sleep();
+  }
+  if (myCard.mode == 3) {
+    track = random(1, numTracksInFolder + 1);
+    Serial.print(F("Party mode is active -> play random track: "));
+    Serial.println(track);
+    playFolder(myCard.folder, track);
+  }
+  if (myCard.mode == 4) {
+    Serial.println(F("Single mode active -> save power"));
+    myDFPlayer.sleep();
+  }
+  if (myCard.mode == 5) {
+    if (track != numTracksInFolder) {
+      track = track + 1;
+      Serial.print(F("Audiobook mode is active -> next track and save progress"));
+      Serial.println(track);
+      playFolder(myCard.folder, track);
+      // Save progress in the EEPROM
+      EEPROM.write(myCard.folder, track);
+    } else
+      myDFPlayer.sleep();
+    // Reset progress
+    EEPROM.write(myCard.folder, 1);
+  }
+  delay(500);
 }
 
-void nextTrack(){
-    if(myCard.track<myCard.numTracksInFolder){
-        myCard.track=myCard.track+1;
-        Serial.print("Folder: ");Serial.print(myCard.folder);
-        Serial.print(" - Track: ");Serial.print(myCard.track);Serial.print("/");Serial.println(myCard.numTracksInFolder);
-        delay(100);
-        timer.set();
-        isplaying=true;
-        myDFPlayer.playFolder(myCard.folder, myCard.track);
+static void previousTrack() {
+  if (myCard.mode == 1) {
+    Serial.println(F("Radio play mode is active -> play track from the beginning"));
+    playFolder(myCard.folder, track);
+  }
+  if (myCard.mode == 2) {
+    Serial.println(F("Album mode is active -> Previous track"));
+    if (track != 1) {
+      track = track - 1;
     }
+    playFolder(myCard.folder, track);
+  }
+  if (myCard.mode == 3) {
+    Serial.println(F("Party Modus is active -> Play track from the beginning"));
+    playFolder(myCard.folder, track);
+  }
+  if (myCard.mode == 4) {
+    Serial.println(F("Single mode active -> Play track from the beginning"));
+    playFolder(myCard.folder, track);
+  }
+  if (myCard.mode == 5) {
+    Serial.println(F("Audiobook mode is active -> Next track and save progress"));
+    if (track != 1) {
+      track = track - 1;
+    }
+    playFolder(myCard.folder, track);
+    // Save progress in the EEPROM
+    EEPROM.write(myCard.folder, track);
+  }
 }
 
-void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len){
-  if(type == WS_EVT_CONNECT){
-    Serial.printf("ws[%s][%u] connect\n", server->url(), client->id());
-    client->printf("Hello Client %u :)", client->id());
-    client->ping();
-  } else if(type == WS_EVT_DISCONNECT){
-    Serial.printf("ws[%s][%u] disconnect: %u\n", server->url(), client->id());
-  } else if(type == WS_EVT_ERROR){
-    Serial.printf("ws[%s][%u] error(%u): %s\n", server->url(), client->id(), *((uint16_t*)arg), (char*)data);
-  } else if(type == WS_EVT_PONG){
-    Serial.printf("ws[%s][%u] pong[%u]: %s\n", server->url(), client->id(), len, (len)?(char*)data:"");
-  } else if(type == WS_EVT_DATA){
-    AwsFrameInfo * info = (AwsFrameInfo*)arg;
-    String msg = "";
-    if(info->final && info->index == 0 && info->len == len){
-      //the whole message is in a single frame and we got all of it's data
-      Serial.printf("ws[%s][%u] %s-message[%llu]: ", server->url(), client->id(), (info->opcode == WS_TEXT)?"text":"binary", info->len);
+bool isPlaying() {
+  return !digitalRead(busyPin);
+}
 
-      if(info->opcode == WS_TEXT){
-        for(size_t i=0; i < info->len; i++) {
-          msg += (char) data[i];
-        }
-      } else {
-        char buff[3];
-        for(size_t i=0; i < info->len; i++) {
-          sprintf(buff, "%02x ", (uint8_t) data[i]);
-          msg += buff ;
-        }
-      }
-      Serial.printf("%s\n",msg.c_str());
+//==========================================================================================
+// Function to evaluate the answers of the HTML page
+void handleRestart() {
+  // Restart ESP
+  ESP.restart();
+}
 
-      if(info->opcode == WS_TEXT)
-        client->text("I got your text message");
-      else
-        client->binary("I got your binary message");
-    } else {
-      //message is comprised of multiple frames or the frame is split into multiple packets
-      if(info->index == 0){
-        if(info->num == 0)
-          Serial.printf("ws[%s][%u] %s-message start\n", server->url(), client->id(), (info->message_opcode == WS_TEXT)?"text":"binary");
-        Serial.printf("ws[%s][%u] frame[%u] start[%llu]\n", server->url(), client->id(), info->num, info->len);
+void handleUpdate() {
+  server.send(200, "text/html", UpdatePage());
+}
+
+void handleSetup() {
+  server.send ( 200, "text/html", SetupPage());
+  if (server.args() > 0 ) { // Arguments were received
+    for ( uint8_t i = 0; i < server.args(); i++ ) {
+
+      Serial.print("The server received the following: "); // Display the argument
+      Serial.print(server.argName(i)); // Display the argument
+      Serial.print("=");
+      Serial.println(server.arg(i));
+
+      if (server.argName(i) == "ssid" ) {
+        Serial.print("saved SSID : '");
+        Serial.println(server.arg(i));
+        preferences.putString("SSID", server.arg(i));
+
       }
 
-      Serial.printf("ws[%s][%u] frame[%u] %s[%llu - %llu]: ", server->url(), client->id(), info->num, (info->message_opcode == WS_TEXT)?"text":"binary", info->index, info->index + len);
+      else if (server.argName(i) == "pw") {
+        Serial.print("saved PW : '");
+        Serial.println(server.arg(i));
+        preferences.putString("Password", server.arg(i));
 
-      if(info->opcode == WS_TEXT){
-        for(size_t i=0; i < info->len; i++) {
-          msg += (char) data[i];
-        }
-      } else {
-        char buff[3];
-        for(size_t i=0; i < info->len; i++) {
-          sprintf(buff, "%02x ", (uint8_t) data[i]);
-          msg += buff ;
-        }
-      }
-      Serial.printf("%s\n",msg.c_str());
+      } else if (server.argName(i) == "hostname") {
+        Serial.print("saved Hostname: ");
+        Serial.println(server.arg(i));
+        preferences.putString("Hostname", server.arg(i));
 
-      if((info->index + len) == info->len){
-        Serial.printf("ws[%s][%u] frame[%u] end[%llu]\n", server->url(), client->id(), info->num, info->len);
-        if(info->final){
-          Serial.printf("ws[%s][%u] %s-message end\n", server->url(), client->id(), (info->message_opcode == WS_TEXT)?"text":"binary");
-          if(info->message_opcode == WS_TEXT)
-            client->text("I got your text message");
-          else
-            client->binary("I got your binary message");
-        }
       }
     }
   }
 }
 
-String getIndexHTML(){
-  String ret = F("<!DOCTYPE html><html><body>");
-  ret+=F("<h2><a href='/edit'>Edit Pages</a></h2><br>");
-  ret+=F("<h2><a href='/heap'>Heap</a></h2><br>");
-  ret+=F("<h2><a href='/play'>play</a></h2><br>");
-  ret+=F("<h2><a href='/pause'>pause</a></h2><br>");
-  ret+=F("<h2><a href='/sleep'>Sleep</a></h2><br>");
-  ret+=F("<h2><a href='/playfolder'>playfolder</a></h2>");
-  ret+=F("</body></html>");
-  return ret;
+void handleRoot() {
+  server.send ( 200, "text/html", getPage() );
+  if (server.args() > 0 ) { // Arguments were received
+    for ( uint8_t i = 0; i < server.args(); i++ ) {
+
+      Serial.print("The server received the following: "); // Display the argument
+      Serial.print(server.argName(i)); // Display the argument
+      Serial.print("=");
+      Serial.println(server.arg(i));
+
+      if (server.argName(i) == "appt-time-off" ) {
+        TimerOFF = server.arg(i);
+        char charBuf[TimerOFF.length() + 1];
+        TimerOFF.toCharArray(charBuf, TimerOFF.length() + 1);
+        TMR_OFF_HH = atof(strtok(charBuf, ":"));
+        TMR_OFF_MM = atof(strtok(NULL, ":"));
+        Serial.print("The time read in for TimerOFF: ");
+        Serial.print(TMR_OFF_HH);
+        Serial.print(":");
+        Serial.println(TMR_OFF_MM);
+        TMR_OFF_REP = 0;
+        TMP_OFFTIME = false;
+      }
+
+      else if (server.argName(i) == "cb_tmr_off") {
+        TMR_OFF_REP = 1;
+        Serial.println("A repeat has been set for the TimerOFF");
+      }
+
+      else if (server.argName(i) == "appt-time-on") {
+        TimerON = server.arg(i);
+        char charBuf[TimerON.length() + 1];
+        TimerON.toCharArray(charBuf, TimerON.length() + 1);
+        TMR_ON_HH = atof(strtok(charBuf, ":"));
+        TMR_ON_MM = atof(strtok(NULL, ":"));
+        Serial.print("The time read in for TimerON: ");
+        Serial.print(TMR_ON_HH);
+        Serial.print(":");
+        Serial.println(TMR_ON_MM);
+        TMR_ON_REP = 0;
+        TMP_ONTIME = false;
+      }
+
+      else if (server.argName(i) == "cb_tmr_on") {
+        TMR_ON_REP = 1;
+        Serial.println("A repetition has been set for the TimerON");
+      }
+
+      else if (server.argName(i) == "akt_volume") {
+        myDFPlayer.volume(server.arg(i).toInt());
+        akt_Volume = myDFPlayer.readVolume();
+        Serial.println("The current volume level has been changed");
+      }
+      else if (server.argName(i) == "max_volume") {
+        max_Volume = server.arg(i).toInt();
+        Serial.println("The maximum volume level has been changed");
+      }
+      else if (server.argName(i) == "LED_color") {
+        Serial.println("The color of the LEDs is changed: " + server.arg(i));
+        String Color = server.arg(i);
+        char *ptr;
+        char charBuf[Color.length() + 1];
+        Color.toCharArray(charBuf, Color.length() + 1);
+        unsigned long col = strtol(charBuf, &ptr, 16);
+        switchOnLeds(NUM_LEDS, col );
+      }
+      else if (server.argName(i) == "LED_bri") {
+        Serial.println("The brightness of the LEDs is changed ");
+        Serial.println("brightness = " + server.arg(i));
+        FastLED.setBrightness(server.arg(i).toInt());
+        FastLED.show();
+      }
+      else if (server.argName(i) == "cb_SleepLight_on") {
+        //CODE HERE
+        if (server.arg(i).toInt() == 1) {
+          SleepLight = true;
+        }
+      }
+      else if (server.argName(i) == "cb_SleepLight_off") {
+        if (server.arg(i).toInt() == 0) {
+          SleepLight = false;
+        }
+      }
+      else if (server.argName(i) == "cb_WakeUpLight_on") {
+        if (server.arg(i).toInt() == 1) {
+          WakeUpLight = true;
+        }
+
+      }
+      else if (server.argName(i) == "cb_WakeUpLight_off") {
+        if (server.arg(i).toInt() == 0) {
+          WakeUpLight = false;
+        }
+      }
+
+    }
+  }
 }
 
-void SpiffServerSetup(){
-    SPIFFS.begin();
+//===================================================================================
+// From here, actions which are triggered by pressing a button on the HTML page
+void handlePrev() {
+  Serial.println("handlePrev");
+  myDFPlayer.previous();
+  server.send(200, "text/html", getPage());
+}
 
-  ws.onEvent(onWsEvent);
-  server.addHandler(&ws);
+void handlePlay() {
+  Serial.println("handlePlay");
+  myDFPlayer.start();
+  server.send(200, "text/html", getPage());
+}
 
-  events.onConnect([](AsyncEventSourceClient *client){
-    client->send("hello!",NULL,millis(),1000);
-  });
-  server.addHandler(&events);
+void handlePause() {
+  Serial.println("handlePause");
+  myDFPlayer.pause();
+  server.send(200, "text/html", getPage());
+}
 
-  server.addHandler(new SPIFFSEditor(SPIFFS,"",""));
+void handleNext() {
+  Serial.println("handleNext");
+  myDFPlayer.next();
+  server.send(200, "text/html", getPage());
+}
 
-  server.on("/heap", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "text/plain", String(ESP.getFreeHeap()));
-  });
+void handleVol_up() {
+  Serial.println("handleVol+");
+  myDFPlayer.volumeUp();
+  akt_Volume = myDFPlayer.readVolume();
+  server.send(200, "text/html", getPage());
+}
 
-  server.on("/play", HTTP_GET, [](AsyncWebServerRequest *request){
-    myDFPlayer.play();
-    request->send(200, "text/plain", "PLAY");
-  });
+void handleVol_down() {
+  Serial.println("handleVol-");
+  myDFPlayer.volumeDown();
+  akt_Volume = myDFPlayer.readVolume();
+  server.send(200, "text/html", getPage());
+}
 
-server.on("/pause", HTTP_GET, [](AsyncWebServerRequest *request){
-    myDFPlayer.pause();
-    request->send(200, "text/plain", "PAUSE");
-  });
+void handleEQ_NORM() {
+  Serial.println("handleEQ_Norm");
+  myDFPlayer.EQ(DFPLAYER_EQ_NORMAL);
+  server.send(200, "text/html", getPage());
+}
 
-  server.on("/sleep", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "text/plain", "SLEEP");
-    //myDFPlayer.sleep();
-    Serial.println("*******************************");
-    Serial.println("    DEEP SLEEP:          ");
-    Serial.println("*******************************");
-    digitalWrite(GND_SWI_PIN,LOW);
+void handleEQ_POP() {
+  Serial.println("handleEQ_POP");
+  myDFPlayer.EQ(DFPLAYER_EQ_POP);
+  server.send(200, "text/html", getPage());
+}
+
+void handleEQ_ROCK() {
+  Serial.println("handleEQ_ROCK");
+  myDFPlayer.EQ(DFPLAYER_EQ_ROCK);
+  server.send(200, "text/html", getPage());
+}
+
+void handleEQ_CLASSIC() {
+  Serial.println("handleEQ_CLASSIC");
+  myDFPlayer.EQ(DFPLAYER_EQ_CLASSIC);
+  server.send(200, "text/html", getPage());
+}
+
+void handleEQ_BASS() {
+  Serial.println("handleEQ_BASE");
+  myDFPlayer.EQ(DFPLAYER_EQ_BASS);
+  server.send(200, "text/html", getPage());
+}
+
+void handleEQ_JAZZ() {
+  Serial.println("handleEQ_JAZZ");
+  myDFPlayer.EQ(DFPLAYER_EQ_JAZZ);
+  server.send(200, "text/html", getPage());
+}
+
+void handleResetCard() {
+  Serial.println("handleResetCard");
+  resetCard();
+  server.send(200, "text/html", getPage());
+}
+
+void handleResetEEPROM() {
+  Serial.println("handleResetEEPROM");
+  ResetEEPROM();
+  server.send(200, "text/html", getPage());
+}
+
+//==========================================================================================
+// Function for the Sunrise simulation
+void sunrise() {
+
+  if (debug) Serial.println("sunrise() is running");
+  CRGBPalette256 sunrisePal = sunrise_gp;
+  CRGB color = ColorFromPalette(sunrisePal, heatIndex);
+  // fill the entire strip with the current color
+  fill_solid(leds, NUM_LEDS, color);
+  FastLED.show();
+  heatIndex++;
+  if (heatIndex == 255) {
+    heatIndex = 0;
+    startSR = false;
+  }
+}
+
+//==========================================================================================
+// Function to evaluate the on / off timer
+void TimeCompare() {
+
+  //if(debug) Serial.println("TimeCompare() is executed");
+  timeClient.update();
+  int NTP_HH = timeClient.getHours();
+  int NTP_MM = timeClient.getMinutes();
+  //Serial.println("The current NTP time:" + String(NTP_HH) +":"+ String(NTP_MM) );
+
+  if ((TMR_OFF_MM == NTP_MM) and (TMP_OFFTIME == false) and (TMR_OFF_HH == NTP_HH)) {
+    // Sleep Timer
     myDFPlayer.pause();
     delay(100);
-    esp_deep_sleep_start();
-    
+    playMp3Folder(902); //Play goodbye
+    //myDFPlayer.outputDevice(DFPLAYER_DEVICE_SLEEP);
+    delay(10000);
+    while (isPlaying())
+      myDFPlayer.stop();
+    if (TMR_OFF_REP == 0) {
+      TMP_OFFTIME = true;
+    }
+    Serial.println("Playback was stopped by the OFF timer.");
+  }
+
+  else if ((TMR_ON_MM == NTP_MM) and (TMP_ONTIME == false) and (TMR_ON_HH == NTP_HH)) {
+    playMp3Folder(903); // Play welcome
+    //myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
+    if (TMR_ON_REP == 0) {
+      TMP_ONTIME = true;
+    }
+    if (WakeUpLight == true) {
+      startSR = true;
+    }
+    Serial.println("Playback was started by the ON timer.");
+  }
+}
+
+//==========================================================================================
+// WiFi Connection
+//==========================================================================================
+int WiFi_RouterNetworkConnect(char* txtSSID, char* txtPassword, char* txtHostname)
+{
+  int success = 1;
+
+  // connect to WiFi network
+  // see https://www.arduino.cc/en/Reference/WiFiBegin
+  WiFi.begin(txtSSID, txtPassword);
+  WiFi.setHostname(txtHostname);
+
+  // we wait until connection is established
+  // or 10 seconds are gone
+  int WiFiConnectTimeOut = 0;
+  while ((WiFi.status() != WL_CONNECTED) && (WiFiConnectTimeOut < 10))
+  {
+    delay(1000);
+    WiFiConnectTimeOut++;
+  }
+
+  // not connected
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    success = -1;
+  }
+
+  // print out local address of ESP32 in Router network (LAN)
+  Serial.println(WiFi.localIP());
+  if (debug) Serial.print("WiFi Connect to AP");
+  if (debug) Serial.println(String(success));
+  return success;
+}
+
+// Disconnect from router network and return 1 (success) or -1 (no success)
+int WiFi_RouterNetworkDisconnect()
+{
+  int success = -1;
+  WiFi.disconnect();
+
+  int WiFiConnectTimeOut = 0;
+  while ((WiFi.status() == WL_CONNECTED) && (WiFiConnectTimeOut < 10))
+  {
+    delay(1000);
+    WiFiConnectTimeOut++;
+  }
+
+  // not connected
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    success = 1;
+  }
+  Serial.println("Disconnected.");
+  switchOnLeds(NUM_LEDS, WARNING_COLOR );
+  return success;
+}
+
+// Initialize Soft Access Point with ESP32
+// ESP32 establishes its own WiFi network, one can choose the SSID
+int WiFi_AccessPointStart(char* AccessPointNetworkSSID)
+{
+  WiFi.mode(WIFI_AP);
+  IPAddress apIP(192, 168, 4, 1);    // Here IP is determined
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  WiFi.softAP("TonUINO");  // Name  des Access Points
+  delay(500);
+  if (debug)  Serial.println("Start AP");
+  if (debug)  Serial.print("IP Adresse ");      //Output of current IP server
+  if (debug)  Serial.println(WiFi.softAPIP());
+
+  //Announcement that an access point is opened
+  playMp3Folder(901);
+  server.on("/", handleSetup);                // INI wifimanager Index Webseite send
+  server.on("/restart", []() {                 // INI wifimanager Index Webseite send
+    server.send(200, "text/plain", "ESP reset is done");
+    handleRestart();
   });
 
-    server.on("/playfolder", HTTP_GET, [] (AsyncWebServerRequest *request) {
-        String message;
-        if (request->hasParam(PARAM_MESSAGE)) {
-            message = request->getParam(PARAM_MESSAGE)->value();
-            myDFPlayer.playFolder(message.toInt(), 1);
-        }
-        request->send(200, "text/plain", "Hello, GET: " + message);
-    });
+  server.begin();
+  if (debug)  Serial.println("HTTP Server started");
+  while (1) {
+    server.handleClient();                 // Will run endlessly so the WLAN setup can be done
+    if (digitalRead(buttonPause) == 0)break; // Cancels the waiting loop as soon as the Play / Pause button has been pressed
+  }
 
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "text/html", getIndexHTML());
-  });
-  server.serveStatic("/", SPIFFS, "/").setDefaultFile("index.htm");
+  return 1;
+}
 
-  server.onNotFound([](AsyncWebServerRequest *request){
-    Serial.printf("NOT_FOUND: ");
-    if(request->method() == HTTP_GET)
-      Serial.printf("GET");
-    else if(request->method() == HTTP_POST)
-      Serial.printf("POST");
-    else if(request->method() == HTTP_DELETE)
-      Serial.printf("DELETE");
-    else if(request->method() == HTTP_PUT)
-      Serial.printf("PUT");
-    else if(request->method() == HTTP_PATCH)
-      Serial.printf("PATCH");
-    else if(request->method() == HTTP_HEAD)
-      Serial.printf("HEAD");
-    else if(request->method() == HTTP_OPTIONS)
-      Serial.printf("OPTIONS");
-    else
-      Serial.printf("UNKNOWN");
-    Serial.printf(" http://%s%s\n", request->host().c_str(), request->url().c_str());
+//==========================================================================================
+// Setup
+//==========================================================================================
+void setup() {
+  chipid = ESP.getEfuseMac();
+  //======================ISR TIMER====================================================
+  // Create semaphore to inform us when the timer has fired
+  timerSemaphore = xSemaphoreCreateBinary();
 
-    if(request->contentLength()){
-      Serial.printf("_CONTENT_TYPE: %s\n", request->contentType().c_str());
-      Serial.printf("_CONTENT_LENGTH: %u\n", request->contentLength());
-    }
+  // Use 1st timer of 4 (counted from zero).
+  // Set 80 divider for prescaler (see ESP32 Technical Reference Manual for more
+  // info).
+  timer = timerBegin(0, 80, true);
 
-    int headers = request->headers();
-    int i;
-    for(i=0;i<headers;i++){
-      AsyncWebHeader* h = request->getHeader(i);
-      Serial.printf("_HEADER[%s]: %s\n", h->name().c_str(), h->value().c_str());
-    }
+  // Attach onTimer function to our timer.
+  timerAttachInterrupt(timer, &onTimer, true);
 
-    int params = request->params();
-    for(i=0;i<params;i++){
-      AsyncWebParameter* p = request->getParam(i);
-      if(p->isFile()){
-        Serial.printf("_FILE[%s]: %s, size: %u\n", p->name().c_str(), p->value().c_str(), p->size());
-      } else if(p->isPost()){
-        Serial.printf("_POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
+  // Set alarm to call onTimer function every second (value in microseconds).
+  // Repeat the alarm (third parameter)
+  timerAlarmWrite(timer, 1000000, true);
+
+  //WS2812b Configure
+  //===================================================================================
+  // tell FastLED about the LED strip configuration
+  FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.setBrightness(BRIGHTNESS);  // Adjust the brightness
+  switchOnLeds(1, OK_COLOR );
+
+  //===================================================================================
+
+  Serial.begin(115200);
+  SPI.begin();
+  mySoftwareSerial.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);  // speed, type, RX, TX
+  randomSeed(analogRead(33)); // Initialize the random number generator
+  mfrc522.PCD_Init();
+  mfrc522.PCD_DumpVersionToSerial();
+  switchOnLeds(2, OK_COLOR );
+
+  pinMode(dfpMute, OUTPUT);
+  digitalWrite(dfpMute, LOW);
+
+  // Buttons with PullUp
+  pinMode(headphonePin, INPUT_PULLUP);
+  pinMode(buttonPause, INPUT_PULLUP);
+  pinMode(buttonUp, INPUT_PULLUP);
+  pinMode(buttonDown, INPUT_PULLUP);
+
+  // Busy Pin
+  pinMode(busyPin, INPUT);
+  switchOnLeds(3, OK_COLOR );
+
+  for (byte i = 0; i < 6; i++) {
+    key.keyByte[i] = 0xFF;
+  }
+
+  // RESET --- KEEP ALL THREE BUTTONS STARTED PRESS -> all known cards are deleted
+  // PAUSE/UP/DOWN
+  if (digitalRead(buttonPause) == LOW && digitalRead(buttonUp) == LOW &&
+      digitalRead(buttonDown) == LOW) {
+    ResetEEPROM();
+
+  }
+  switchOnLeds(4, OK_COLOR );
+
+  Serial.println("TonUINO V3.2.1 of ESP32 Basis");
+  Serial.println("Original V2.0: T. Voss, Extended V3.0: C. Ulbrich");
+
+  Serial.println();
+  Serial.println(F("DFRobot DFPlayer Mini"));
+  Serial.println(F("Initializing DFPlayer ... (May take 3~5 seconds)"));
+
+  myDFPlayer.begin(mySoftwareSerial, false, true);
+  switchOnLeds(5, OK_COLOR );
+
+  if (!myDFPlayer.begin(mySoftwareSerial)) {  //Use softwareSerial to communicate with mp3.
+
+    Serial.println(myDFPlayer.readType(), HEX);
+    Serial.println(F("Unable to begin:"));
+    Serial.println(F("1.Please recheck the connection!"));
+    Serial.println(F("2.Please insert the SD card!"));
+    switchOnLeds(6, KO_COLOR );
+    while (true);
+  }
+  Serial.println(F("DFPlayer Mini online."));
+  switchOnLeds(6, OK_COLOR );
+
+  myDFPlayer.setTimeOut(500); //Set serial communication time out 500ms
+  delay(100);
+  switchOnLeds(7, OK_COLOR );
+  //----Set volume----
+  myDFPlayer.volume(init_Volume);  //Set init volume
+  //myDFPlayer.volumeUp(); //Volume Up
+  //myDFPlayer.volumeDown(); //Volume Down
+  delay(100);
+  switchOnLeds(8, OK_COLOR );
+  //----Set different EQ----
+  myDFPlayer.EQ(DFPLAYER_EQ_NORMAL);
+  //  myDFPlayer.EQ(DFPLAYER_EQ_POP);
+  //  myDFPlayer.EQ(DFPLAYER_EQ_ROCK);
+  //  myDFPlayer.EQ(DFPLAYER_EQ_JAZZ);
+  //  myDFPlayer.EQ(DFPLAYER_EQ_CLASSIC);
+  //  myDFPlayer.EQ(DFPLAYER_EQ_BASS);
+  delay(100);
+  switchOnLeds(9, OK_COLOR );
+  //----Set device we use SD as default----
+  //  myDFPlayer.outputDevice(DFPLAYER_DEVICE_U_DISK);
+  myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
+  //  myDFPlayer.outputDevice(DFPLAYER_DEVICE_AUX);
+  //  myDFPlayer.outputDevice(DFPLAYER_DEVICE_SLEEP);
+  //  myDFPlayer.outputDevice(DFPLAYER_DEVICE_FLASH);
+
+  //----Mp3 control----
+  //  myDFPlayer.sleep();     //sleep
+  //  myDFPlayer.reset();     //Reset the module
+  //  myDFPlayer.enableDAC();  //Enable On-chip DAC
+  //  myDFPlayer.disableDAC();  //Disable On-chip DAC
+  //  myDFPlayer.outputSetting(true, 15); //output setting, enable the output and set the gain to 15
+
+  //----Read imformation----
+  Serial.println("");
+  Serial.println(F("----------------------------------------"));
+  Serial.print(F("| readState             : "));
+  Serial.println(myDFPlayer.readState()); //read mp3 state
+  switchOnLeds(10, OK_COLOR );
+  Serial.print(F("| readVolume            : "));
+  Serial.println(myDFPlayer.readVolume()); //read current volume
+  switchOnLeds(11, OK_COLOR );
+  Serial.print(F("| readEQ                : "));
+  Serial.println(myDFPlayer.readEQ()); //read EQ setting
+  switchOnLeds(12, OK_COLOR );
+  Serial.print(F("| readFileCounts        : "));
+  Serial.println(myDFPlayer.readFileCounts()); //read all file counts in SD card
+  switchOnLeds(13, OK_COLOR );
+  Serial.print(F("| readCurrentFileNumber : "));
+  Serial.println(myDFPlayer.readCurrentFileNumber()); //read current play file number
+  switchOnLeds(14, OK_COLOR );
+  Serial.print(F("| readFolderCounts      : "));//read folder counts inSD card
+  Serial.println(myDFPlayer.readFolderCounts()); //read
+  for (int f = 1; f <= myDFPlayer.readFolderCounts(); f ++) {
+    Serial.print(F("|    Folder n°"));
+    Serial.print(f); //read file counts in each folder in SD card
+    Serial.print(F(" : "));
+    Serial.println(myDFPlayer.readFileCountsInFolder(f)); //read file counts in each folder in SD card
+  }
+
+  switchOnLeds(15, OK_COLOR );
+  Serial.println(F("----------------------------------------"));
+  delay(1000);
+  switchOnLeds(17, OK_COLOR );
+  delay(1000);
+  switchOnLeds(18, OK_COLOR );
+
+  //Play welcome, who reduced the time of wifi connect
+  playMp3Folder(903);
+
+  preferences.begin("my-wifi", false);
+  if (debug)WiFi.mode(WIFI_AP_STA);
+  // takeout 3 Strings out of the Non-volatile storage
+  String strSSID = preferences.getString("SSID", "");
+  String strPassword = preferences.getString("Password", "");
+  String strHostname = preferences.getString("Hostname", String("TonUINO-" + String((uint32_t)chipid)));
+  switchOnLeds(19, OK_COLOR );
+
+  // convert it to char*
+  char* txtSSID = const_cast<char*>(strSSID.c_str());
+  char* txtPassword = const_cast<char*>(strPassword.c_str());   // https://coderwall.com/p/zfmwsg/arduino-string-to-char
+  char* txtHostname = const_cast<char*>(strHostname.c_str());
+
+  // Connect to Wi-Fi network with SSID and password
+  Serial.print("Connecting to SSID: ");
+  Serial.print(txtSSID);
+  Serial.print(" with the following PW:  ");
+  Serial.print(txtPassword);
+  Serial.print(" with the following Hostname:  ");
+  Serial.println(txtHostname);
+  switchOnLeds(20, OK_COLOR );
+
+  // try to connect to the LAN
+  success = WiFi_RouterNetworkConnect(txtSSID, txtPassword, txtHostname);
+  if (success == 1) {
+    switchOnLeds(21, OK_COLOR );
+  } else {
+    switchOnLeds(21, KO_COLOR );
+  }
+
+  // Start access point"
+  if (success == -1) {
+    WiFi_AccessPointStart("ESP32_TonUINO");
+  }
+  switchOnLeds(22, OK_COLOR );
+
+  Serial.println ( "HTTP server started" );
+
+  // Start NTP client, set the offset to the received time
+  if (success == 1)timeClient.begin();
+  if (success == 1)timeClient.setTimeOffset(+3600); //+1h Offset
+  if (success == 1)timeClient.update();
+  switchOnLeds(23, OK_COLOR );
+
+  // References for receiving HTML client information
+  server.on ( "/", handleRoot );
+  server.on ("/play", handlePlay);
+  server.on ("/pause", handlePause);
+  server.on ("/prev", handlePrev);
+  server.on ("/next", handleNext);
+  server.on ("/vol+", handleVol_up);
+  server.on ("/vol-", handleVol_down);
+  server.on ("/eq_base", handleEQ_BASS);
+  server.on ("/eq_pop", handleEQ_POP);
+  server.on ("/eq_rock", handleEQ_ROCK);
+  server.on ("/eq_classic", handleEQ_CLASSIC);
+  server.on ("/eq_jazz", handleEQ_JAZZ);
+  server.on ("/eq_norm", handleEQ_NORM);
+  server.on ("/reset_card", handleResetCard);
+  server.on ("/reset_eeprom", handleResetEEPROM);
+  server.on ("/setup", handleSetup);
+  server.on ("/update", handleUpdate);
+
+  /*handling uploading firmware file */
+  server.on("/upload", HTTP_POST, []() {
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+    ESP.restart();
+  }, []() {
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      Serial.printf("Update: %s\n", upload.filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //start with max available size
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      /* flashing firmware to ESP*/
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) { //true to set the size to the current progress
+        Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
       } else {
-        Serial.printf("_GET[%s]: %s\n", p->name().c_str(), p->value().c_str());
+        Update.printError(Serial);
+      }
+    }
+  });
+
+  server.begin();
+  if (success == 1)startTimer();
+  Serial.println ( "===============////////////// ================" );
+  Serial.println ( "===============/ END SETUP  / ================" );
+  Serial.println ( "===============/ //////////// ================" );
+  switchOnLeds(NUM_LEDS, OK_COLOR );
+}
+//==============END SETUP================================
+
+//==========================================================================================
+// Loop
+//==========================================================================================
+void loop() {
+  do {
+
+    if (xSemaphoreTake(timerSemaphore, 0) == pdTRUE) { //Timer Interrupt Routine
+      uint32_t isrCount = 0, isrTime = 0;
+      // Read the interrupt count and time
+      portENTER_CRITICAL(&timerMux);
+      isrCount = isrCounter;
+      if (isrRead == false) {
+        isrRead = true;
+        isrTime = millis();
+      }
+      portEXIT_CRITICAL(&timerMux);
+      //From here functions for timers
+
+      if (success == 1) TimeCompare(); //Query time in seconds
+      if (startSR == true) sunrise();
+
+    }
+    server.handleClient();
+
+    if (!isPlaying()) {
+      if (myDFPlayer.available()) {
+        printDetail(myDFPlayer.readType(), myDFPlayer.read()); //Print the detail message from DFPlayer to handle different errors and states.
+      }
+    }
+    // Buttons are now traded via JS_Button, so that each key can be assigned twice
+    pauseButton.read();
+    upButton.read();
+    downButton.read();
+
+    // Detecting if a headphone is plugged in, "headphoneIn" locks in each case the query so that it will go through only once
+    if ((digitalRead(headphonePin) == 1) && (headphoneIn == 0)) {
+
+      Serial.println("Earphone was plugged in");
+      digitalWrite(dfpMute, HIGH);
+      headphoneIn = 1;
+      last_max_Volume = max_Volume; // Remember the last maximum volume
+      last_Volume = myDFPlayer.readVolume();
+      max_Volume = max_Volume_headphone;
+      if (myDFPlayer.readVolume() >= max_Volume) {
+        Serial.print("myDFPlayer.readVolume : ");
+        Serial.print(myDFPlayer.readVolume());
+        Serial.print(" >= max_Volume : ");
+        Serial.println(max_Volume);
+        myDFPlayer.volume(max_Volume_headphone);
+      }
+
+    } else if ((digitalRead(headphonePin) == 0) && (headphoneIn == 1)) {
+      Serial.println("Headphones have been removed");
+      headphoneIn = 0;
+      max_Volume = last_max_Volume;
+      myDFPlayer.volume(last_Volume);
+    }
+
+    if (pauseButton.wasReleased()) {
+      if (ignorePauseButton == false) {
+        if (isPlaying()) {
+          myDFPlayer.pause();
+          switchOnLeds(NUM_LEDS, CRGB::Black );
+          startSR = false;
+          heatIndex = 0;
+        } else {
+          myDFPlayer.start();
+
+          ignorePauseButton = false;
+        }
+      }
+    } else if (pauseButton.pressedFor(LONG_PRESS) &&
+               ignorePauseButton == false) {
+      Serial.println(F("Pause button was pressed long"));
+      if (isPlaying()) {
+        myDFPlayer.advertise(track);
+      }
+      else {
+        knownCard = false;
+        playMp3Folder(800);
+        resetCard();
+        mfrc522.PICC_HaltA();
+        mfrc522.PCD_StopCrypto1();
+      }
+      ignorePauseButton = true;
+    }
+
+    if (upButton.pressedFor(LONG_PRESS)) {
+      Serial.println(F("Volume Up"));
+      myDFPlayer.volumeUp();
+      nextTrack();
+      ignoreUpButton = true;
+      delay(1000);
+    } else if (upButton.wasReleased()) {
+      if (!ignoreUpButton) {
+        //nextTrack();
+        if (myDFPlayer.readVolume() <= max_Volume) {
+          myDFPlayer.volumeUp();
+        }
+      } else {
+        ignoreUpButton = false;
       }
     }
 
-    request->send(404);
-  });
-  server.onFileUpload([](AsyncWebServerRequest *request, const String& filename, size_t index, uint8_t *data, size_t len, bool final){
-    if(!index)
-      Serial.printf("UploadStart: %s\n", filename.c_str());
-    Serial.printf("%s", (const char*)data);
-    if(final)
-      Serial.printf("UploadEnd: %s (%u)\n", filename.c_str(), index+len);
-  });
-  server.onRequestBody([](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-    if(!index)
-      Serial.printf("BodyStart: %u\n", total);
-    Serial.printf("%s", (const char*)data);
-    if(index + len == total)
-      Serial.printf("BodyEnd: %u\n", total);
-  });
-  server.begin();
+    if (downButton.pressedFor(LONG_PRESS)) {
+      Serial.println(F("Volume Down"));
+      myDFPlayer.volumeDown();
+      previousTrack();
+      ignoreDownButton = true;
+      delay(1000);
+    } else if (downButton.wasReleased()) {
+      if (!ignoreDownButton)
+        //previousTrack();
+        myDFPlayer.volumeDown();
+      else
+        ignoreDownButton = false;
+    }
+
+    // End of the buttons
+  } while (!mfrc522.PICC_IsNewCardPresent());
+
+  // RFID card was launched
+
+  if (!mfrc522.PICC_ReadCardSerial())
+    return;
+
+  if (readCard(&myCard) == true) {
+    if (myCard.cookie == 322417479 && myCard.folder != 0 && myCard.mode != 0) {
+
+      knownCard = true;
+      numTracksInFolder = myDFPlayer.readFileCountsInFolder(myCard.folder);
+      
+      Serial.println(F("----------------------------------------"));
+      Serial.print(F("| myCard.folder     : "));
+      Serial.println(myCard.folder);
+      Serial.print(F("| numTracksInFolder : "));
+      Serial.println(numTracksInFolder);
+      Serial.print(F("| myCard.mode       : "));
+      Serial.println(myCard.mode);
+      Serial.print(F("| myCard.color      : "));
+      Serial.println(myCard.color);
+      Serial.println(F("----------------------------------------"));
+
+      // Radio play mode: a random file from the folder
+      if (myCard.mode == 1) {
+        Serial.println(F("Radio play mode -> play random track"));
+        track = random(1, numTracksInFolder + 1);
+        Serial.println(track);
+      }
+      // Album mode: play complete folder
+      if (myCard.mode == 2) {
+        Serial.println(F("Album mode -> play complete folder"));
+        track = 1;
+      }
+      // Party Mode: Folder in random order
+      if (myCard.mode == 3) {
+        Serial.println(F("Party Mode -> play folders in random order"));
+        track = random(1, numTracksInFolder + 1);
+      }
+      // Single mode: play a file from the folder
+      if (myCard.mode == 4) {
+        Serial.println(F("Single mode -> play a file from the folder"));
+        track = myCard.special;
+      }
+      // Audiobook mode: play complete folder and remember progress
+      if (myCard.mode == 5) {
+        Serial.println(F("Audiobook mode -> play complete folder and remember progress"));
+        track = EEPROM.read(myCard.folder);
+        if (track == 0)track = 1;
+      }
+      playFolder(myCard.folder, track);
+      switchOnLeds(NUM_LEDS, myCard.color );
+    }
+
+    // New card configured
+    else {
+      knownCard = false;
+      setupCard();
+    }
+  }
+  mfrc522.PICC_HaltA();
+  mfrc522.PCD_StopCrypto1();
+}
+//==============END LOOP================================
+
+
+//==========================================================================================
+// Function voiceMenu
+int voiceMenu(int numberOfOptions, int startMessage, int messageOffset,
+              bool preview , int previewFromFolder) {
+  int returnValue = 0;
+
+  Serial.println(F("Will play file no.:"));
+  Serial.println(startMessage);
+
+  if (startMessage != 0) {
+    playMp3Folder(startMessage);
+    playMp3Folder(startMessage);
+  }
+  do {
+    pauseButton.read();
+    upButton.read();
+    downButton.read();
+    //myDFPlayer.loop();
+    if (pauseButton.wasPressed()) {
+      if (returnValue != 0)
+        return returnValue;
+      delay(1000);
+    }
+
+    if (upButton.pressedFor(LONG_PRESS)) {
+      returnValue = fmin(returnValue + 10, numberOfOptions);
+      playMp3Folder(messageOffset + returnValue);
+      delay(1000);
+      if (preview) {
+        do {
+          delay(10);
+        } while (isPlaying());
+        if (previewFromFolder == 0)
+          playFolder(returnValue, 1);
+        else
+          playFolder(previewFromFolder, returnValue);
+      }
+      ignoreUpButton = true;
+    } else if (upButton.wasReleased()) {
+      if (!ignoreUpButton) {
+        returnValue = fmin(returnValue + 1, numberOfOptions);
+        playMp3Folder(messageOffset + returnValue);
+        delay(1000);
+        if (preview) {
+          do {
+            delay(10);
+          } while (isPlaying());
+          if (previewFromFolder == 0)
+            playFolder(returnValue, 1);
+          else
+            playFolder(previewFromFolder, returnValue);
+        }
+      } else
+        ignoreUpButton = false;
+    }
+
+    if (downButton.pressedFor(LONG_PRESS)) {
+      returnValue = fmax(returnValue - 10, 1);
+      playMp3Folder(messageOffset + returnValue);
+      delay(1000);
+      if (preview) {
+        do {
+          delay(10);
+        } while (isPlaying());
+        if (previewFromFolder == 0)
+          playFolder(returnValue, 1);
+        else
+          playFolder(previewFromFolder, returnValue);
+      }
+      ignoreDownButton = true;
+    } else if (downButton.wasReleased()) {
+      if (!ignoreDownButton) {
+        returnValue = fmax(returnValue - 1, 1);
+        playMp3Folder(messageOffset + returnValue);
+        delay(1000);
+        if (preview) {
+          do {
+            delay(10);
+          } while (isPlaying());
+          if (previewFromFolder == 0)
+            playFolder(returnValue, 1);
+          else
+            playFolder(previewFromFolder, returnValue);
+        }
+      } else
+        ignoreDownButton = false;
+    }
+  } while (true);
 }
 
+//==========================================================================================
+// Function resetCard
+void resetCard() {
+  Serial.println(F("Reset card..."));
+  do {
+    pauseButton.read();
+    upButton.read();
+    downButton.read();
+
+    if (upButton.wasReleased() || downButton.wasReleased()) {
+      Serial.println(F("Canceled!"));
+      switchOnLeds(NUM_LEDS, KO_COLOR );
+      playMp3Folder(802);
+      return;
+    }
+  } while (!mfrc522.PICC_IsNewCardPresent());
+
+  if (!mfrc522.PICC_ReadCardSerial())
+    Serial.println(F("No Card Detected!"));
+      switchOnLeds(NUM_LEDS, KO_COLOR );
+    return;
+
+  Serial.println(F("Card is reconfigured!"));
+  switchOnLeds(NUM_LEDS, OK_COLOR );
+  setupCard();
+}
+
+//==========================================================================================
+// Function setupCard
+void setupCard() {
+  myDFPlayer.pause();
+  Serial.print(F("New card configured"));
+
+  // Query folder
+  myCard.folder = voiceMenu(99, 300, 0, true);
+
+  // Query playback mode
+  myCard.mode = voiceMenu(6, 310, 310);
+
+
+  // Interrogate color
+  myCard.color = voiceMenu(7, 600, 600);
+  switch (myCard.color) {
+    case 1:
+      myCard.color = CRGB::Black;
+      break;
+    case 2:
+      myCard.color = CRGB::OrangeRed;
+      break;
+    case 3:
+      myCard.color = CRGB::Yellow;
+      break;
+    case 4:
+      myCard.color = CRGB::LawnGreen;
+      break;
+    case 5:
+      myCard.color = CRGB::LightSkyBlue;
+      break;
+    case 6:
+      myCard.color = CRGB::White;
+      break;
+    case 7:
+      myCard.color = CRGB::Plum;
+      break;
+  }
+
+
+  // Audiobook Mode -> Set progress in EEPROM to 1
+  EEPROM.write(myCard.folder, 1);
+
+  // Single mode -> Query file
+  if (myCard.mode == 4)
+    myCard.special = voiceMenu(myDFPlayer.readFileCountsInFolder(myCard.folder), 320, 0,
+                               true, myCard.folder);
+
+  // Admin Function
+  if (myCard.mode == 6)
+    myCard.special = voiceMenu(3, 316, 320);
+
+  // Card is configured -> save
+  writeCard(myCard);
+}
+
+//==========================================================================================
+// Function readCard
+bool readCard(nfcTagObject *nfcTag) {
+  bool returnValue = true;
+  // Show some details of the PICC (that is: the tag/card)
+  Serial.print(F("Card UID:"));
+  dump_byte_array(mfrc522.uid.uidByte, mfrc522.uid.size);
+  Serial.println();
+  Serial.print(F("PICC type: "));
+  MFRC522::PICC_Type piccType = mfrc522.PICC_GetType(mfrc522.uid.sak);
+  Serial.println(mfrc522.PICC_GetTypeName(piccType));
+
+  byte buffer[18];
+  byte size = sizeof(buffer);
+
+  // Authenticate using key A
+  Serial.println(F("Authenticating using key A..."));
+  status = (MFRC522::StatusCode)mfrc522.PCD_Authenticate(
+             MFRC522::PICC_CMD_MF_AUTH_KEY_A, trailerBlock, &key, &(mfrc522.uid));
+  if (status != MFRC522::STATUS_OK) {
+    returnValue = false;
+    Serial.print(F("PCD_Authenticate() failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(status));
+    switchOnLeds(NUM_LEDS, KO_COLOR );
+    return returnValue;
+  }
+
+  // Show the whole sector as it currently is
+  Serial.println(F("Current data in sector:"));
+  mfrc522.PICC_DumpMifareClassicSectorToSerial(&(mfrc522.uid), &key, sector);
+  Serial.println();
+
+  // Read data from the block
+  Serial.print(F("Reading data from block "));
+  Serial.print(blockAddr);
+  Serial.println(F(" ..."));
+  status = (MFRC522::StatusCode)mfrc522.MIFARE_Read(blockAddr, buffer, &size);
+  if (status != MFRC522::STATUS_OK) {
+    returnValue = false;
+    Serial.print(F("MIFARE_Read() failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(status));
+    switchOnLeds(NUM_LEDS, KO_COLOR );
+  }
+  Serial.print(F("Data in block "));
+  Serial.print(blockAddr);
+  Serial.println(F(":"));
+  dump_byte_array(buffer, 20);
+  Serial.println();
+  Serial.println();
+
+  uint32_t tempCookie;
+  tempCookie = (uint32_t)buffer[0] << 24;
+  tempCookie += (uint32_t)buffer[1] << 16;
+  tempCookie += (uint32_t)buffer[2] << 8;
+  tempCookie += (uint32_t)buffer[3];
+
+  uint32_t tempColor;
+  tempColor = (uint32_t)buffer[8] << 24;
+  tempColor += (uint32_t)buffer[9] << 16;
+  tempColor += (uint32_t)buffer[10] << 8;
+  tempColor += (uint32_t)buffer[11];
+
+  nfcTag->cookie = tempCookie;
+  nfcTag->version = buffer[4];
+  nfcTag->folder = buffer[5];
+  nfcTag->mode = buffer[6];
+  nfcTag->special = buffer[7];
+  nfcTag->color = tempColor;
+
+  return returnValue;
+}
+
+//==========================================================================================
+// Function writeCard
+void writeCard(nfcTagObject nfcTag) {
+  MFRC522::PICC_Type mifareType;
+
+  uint8_t bytes[4];
+
+  bytes[0] = (nfcTag.color >> 0)  & 0xFF;
+  bytes[1] = (nfcTag.color >> 8)  & 0xFF;
+  bytes[2] = (nfcTag.color >> 16) & 0xFF;
+  bytes[3] = (nfcTag.color >> 24) & 0xFF;
+
+  byte buffer[20] = {0x13, 0x37, 0xb3, 0x47, // 0x1337 0xb347 magic cookie to
+                     // identify our nfc tags
+                     0x01,                   // version 1
+                     nfcTag.folder,          // the folder picked by the user
+                     nfcTag.mode,    // the playback mode picked by the user
+                     nfcTag.special, // track or function for admin cards
+                     bytes[3],  //Color to be switched on
+                     bytes[2],  //Color to be switched on
+                     bytes[1],  //Color to be switched on
+                     bytes[0],  //Color to be switched on
+                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+                    };
+
+  byte size = sizeof(buffer);
+
+  mifareType = mfrc522.PICC_GetType(mfrc522.uid.sak);
+
+  // Authenticate using key B
+  Serial.println(F("Authenticating again using key B..."));
+  status = (MFRC522::StatusCode)mfrc522.PCD_Authenticate(
+             MFRC522::PICC_CMD_MF_AUTH_KEY_B, trailerBlock, &key, &(mfrc522.uid));
+  if (status != MFRC522::STATUS_OK) {
+    Serial.print(F("PCD_Authenticate() failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(status));
+    switchOnLeds(NUM_LEDS, KO_COLOR );
+    playMp3Folder(401);
+    return;
+  }
+
+  // Write data to the block
+  Serial.print(F("Writing data into block "));
+  Serial.print(blockAddr);
+  Serial.println(F(" ..."));
+  dump_byte_array(buffer, 20);
+  Serial.println();
+  status = (MFRC522::StatusCode)mfrc522.MIFARE_Write(blockAddr, buffer, 16);
+  if (status != MFRC522::STATUS_OK) {
+    Serial.print(F("MIFARE_Write() failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(status));
+    switchOnLeds(NUM_LEDS, KO_COLOR );
+    playMp3Folder(401);
+  }
+  else {
+    switchOnLeds(NUM_LEDS, CRGB::Green );
+    playMp3Folder(400);
+  }
+  Serial.println();
+  delay(100);
+}
+
+//==========================================================================================
+// Function dump_byte_array
+/**
+   Helper routine to dump a byte array as hex values to Serial.
+*/
+void dump_byte_array(byte *buffer, byte bufferSize) {
+  for (byte i = 0; i < bufferSize; i++) {
+    Serial.print(buffer[i] < 0x10 ? " 0" : " ");
+    Serial.print(buffer[i], HEX);
+  }
+}
+
+//==========================================================================================
+// Function ResetEEPROM
+void ResetEEPROM() {
+  Serial.print(F("EEPROM.length : "));
+  Serial.println(EEPROM_SIZE);
+  for (int i = 0; i < EEPROM_SIZE; i++) {
+    EEPROM.write(i, 0);
+  }
+  Serial.println(F("Reset -> EEPROM is deleted"));
+  switchOnLeds(NUM_LEDS, WARNING_COLOR );
+}
+
+//==========================================================================================
+// Function playMp3Folder
+void playMp3Folder(int track) {
+  Serial.print(F("playMp3Folder Track="));
+  Serial.println(track);
+  myDFPlayer.playMp3Folder(track);
+}
+
+//==========================================================================================
+// Function playFolder
+void playFolder(uint8_t folder, uint16_t track) {
+  Serial.print(F("playFolder Folder="));
+  Serial.print(folder);
+  Serial.print(F(" Track="));
+  Serial.println(track);
+  myDFPlayer.playLargeFolder(folder, track);
+}
+
+//==========================================================================================
+// Function switchOnLeds
+//  numToFill : number of leds to switch on
+//  color     : color of leds to switch on
+void switchOnLeds(int numToFill, uint32_t color) {
+  fill_solid(leds, numToFill, color);
+  FastLED.show();
+}
+
+//==========================================================================================
+// Function startTimer
+void startTimer() {
+  // Start an alarm
+  timerAlarmEnable(timer);
+}
+
+//==========================================================================================
+// Function stoppTimer
+void stoppTimer() {
+  timerEnd(timer);
+  timer = NULL;
+}
 
 //==========================================================================================
 // Function printDetail : Print the detail message from DFPlayer
 void printDetail(uint8_t type, int value) {
+  Serial.print(F("printDetail type="));
+  Serial.print(type);
+  Serial.print(F(" value="));
+  Serial.println(value);
+  switchOnLeds(NUM_LEDS, CRGB::Black );
   switch (type) {
     case TimeOut:
       Serial.println(F("Time Out!"));
+      switchOnLeds(NUM_LEDS, KO_COLOR );
       break;
     case WrongStack:
       Serial.println(F("Stack Wrong!"));
+      switchOnLeds(6, KO_COLOR );
       break;
     case DFPlayerCardInserted:
       Serial.println(F("Card Inserted!"));
-      break;
+      switchOnLeds(6, WARNING_COLOR );
     case DFPlayerCardRemoved:
       Serial.println(F("Card Removed!"));
-      break;
+      switchOnLeds(6, KO_COLOR );
     case DFPlayerCardOnline:
       Serial.println(F("Card Online!"));
+      switchOnLeds(6, OK_COLOR );
       break;
     case DFPlayerPlayFinished:
       Serial.print(F("Number:"));
       Serial.print(value);
       Serial.println(F(" Play Finished!"));
-      Mp3Notify::OnPlayFinished(myCard.track);
+      Mp3Notify::OnPlayFinished(track);
       break;
     case DFPlayerError:
       Serial.print(F("DFPlayerError:"));
@@ -461,307 +1480,9 @@ void printDetail(uint8_t type, int value) {
         default:
           break;
       }
+      switchOnLeds(NUM_LEDS, KO_COLOR );
       break;
     default:
       break;
   }
-}
-
-
-///////////////////////////////////////// Get PICC's UID ///////////////////////////////////
-uint8_t getID() {
-  // Getting ready for Reading PICCs
-  if ( ! mfrc522.PICC_IsNewCardPresent()) { //If a new PICC placed to RFID reader continue
-    return 0;
-  }
-  if ( ! mfrc522.PICC_ReadCardSerial()) {   //Since a PICC placed get Serial and continue
-    return 0;
-  }
-  // There are Mifare PICCs which have 4 byte or 7 byte UID care if you use 7 byte PICC
-  // I think we should assume every PICC as they have 4 byte UID
-  // Until we support 7 byte PICCs
-  Serial.println(F("Scanned PICC's UID:"));
-  for ( uint8_t i = 0; i < 4; i++) {  //
-    readCard[i] = mfrc522.uid.uidByte[i];
-    Serial.print(readCard[i], HEX);
-  }
-  Serial.println("");
-  mfrc522.PICC_HaltA(); // Stop reading
-  return 1;
-}
-
-bool playCard(uint32_t id){
-    bool ret=false;
-    myCard.cardID=id;
-    //Serial.print(F("CARD ID: "));
-    //Serial.println(String(id));
-    myCard.folder=doc[String(id)];
-    //Serial.print(F("Play Folder: "));
-    //Serial.println(myCard.folder);
-    if(myCard.folder>0){ //card exists
-            myCard.numTracksInFolder=myDFPlayer.readFileCountsInFolder(myCard.folder);
-            myCard.track=0;
-            nextTrack();
-            ret=true;
-    }
-    return ret;
-}
-
-void DFPlayerSetup(){
-    mySoftwareSerial.begin(9600, SERIAL_8N1, 16, 17);  // speed, type, RX, TX
-    myDFPlayer.begin(mySoftwareSerial, false, true);
-    
-    if (!myDFPlayer.begin(mySoftwareSerial)) {  //Use softwareSerial to communicate with mp3.
-
-     Serial.println(myDFPlayer.readType(),HEX);
-     Serial.println(F("Unable to begin:"));
-     Serial.println(F("1.Please recheck the connection!"));
-     Serial.println(F("2.Please insert the SD card!"));
-     while(true);
-    }
-    Serial.println(F("DFPlayer Mini online."));
-
-  myDFPlayer.setTimeOut(500); //Set serial communictaion time out 500ms
-  delay(100);
-  //----Set volume----
-  myDFPlayer.volume(15);  //Set volume value (0~30).
-  //myDFPlayer.volumeUp(); //Volume Up
-  //myDFPlayer.volumeDown(); //Volume Down
-  delay(100);
-  //----Set different EQ----
-  myDFPlayer.EQ(DFPLAYER_EQ_NORMAL);
-  //  myDFPlayer.EQ(DFPLAYER_EQ_POP);
-  //  myDFPlayer.EQ(DFPLAYER_EQ_ROCK);
-  //  myDFPlayer.EQ(DFPLAYER_EQ_JAZZ);
-  //  myDFPlayer.EQ(DFPLAYER_EQ_CLASSIC);
-  //  myDFPlayer.EQ(DFPLAYER_EQ_BASS);
-  delay(100);
-  //----Set device we use SD as default----
-  //  myDFPlayer.outputDevice(DFPLAYER_DEVICE_U_DISK);
-  myDFPlayer.outputDevice(DFPLAYER_DEVICE_SD);
-  //  myDFPlayer.outputDevice(DFPLAYER_DEVICE_AUX);
-  //  myDFPlayer.outputDevice(DFPLAYER_DEVICE_SLEEP);
-  //  myDFPlayer.outputDevice(DFPLAYER_DEVICE_FLASH);
-
-  //----Mp3 control----
-  //  myDFPlayer.sleep();     //sleep
-  //  myDFPlayer.reset();     //Reset the module
-  //  myDFPlayer.enableDAC();  //Enable On-chip DAC
-  //  myDFPlayer.disableDAC();  //Disable On-chip DAC
-  //  myDFPlayer.outputSetting(true, 15); //output setting, enable the output and set the gain to 15
-
-  // //----Read imformation----
-  // Serial.println("");
-  // Serial.print(F("readState: "));
-  // Serial.println(myDFPlayer.readState()); //read mp3 state
-  // Serial.print(F("readVolume: "));
-  // Serial.println(myDFPlayer.readVolume()); //read current volume
-  // //Serial.println(F("readEQ--------------------"));
-  // //Serial.println(myDFPlayer.readEQ()); //read EQ setting
-  // Serial.print(F("readFileCounts: "));
-  // Serial.println(myDFPlayer.readFileCounts()); //read all file counts in SD card
-  // Serial.print(F("readCurrentFileNumber: "));
-  // Serial.println(myDFPlayer.readCurrentFileNumber()); //read current play file number
-  // Serial.print(F("readFileCountsInFolder: "));
-  // Serial.println(myDFPlayer.readFileCountsInFolder(2)); //read fill counts in folder SD:/03
-  // Serial.println(F("--------------------"));
-  // delay(2000);
-  
-}
-
-void WIFISetup(){
-
-    WiFi.onEvent(WiFiEvent);
-    WiFi.begin("", "");
-    //wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
-    //wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");
-    
-    Serial.println("Connecting Wifi...");
-    // if(wifiMulti.run() == WL_CONNECTED) {
-    //     Serial.println("");
-    //     Serial.println("WiFi connected");
-    //     Serial.println("IP address: ");
-    //     Serial.println(WiFi.localIP());
-    //     }
-
-}
-
-void OTASetup(){
-    // Port defaults to 3232
-  // ArduinoOTA.setPort(3232);
-
-  // Hostname defaults to esp3232-[MAC]
-  // ArduinoOTA.setHostname("myesp32");
-
-  // No authentication by default
-  // ArduinoOTA.setPassword("admin");
-
-  // Password can be set with it's md5 value as well
-  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
-
-  ArduinoOTA
-    .onStart([]() {
-      String type;
-      if (ArduinoOTA.getCommand() == U_FLASH)
-        type = "sketch";
-      else // U_SPIFFS
-        type = "filesystem";
-
-      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-      Serial.println("Start updating " + type);
-    })
-    .onEnd([]() {
-      Serial.println("\nEnd");
-    })
-    .onProgress([](unsigned int progress, unsigned int total) {
-      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-    })
-    .onError([](ota_error_t error) {
-      Serial.printf("Error[%u]: ", error);
-      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-      else if (error == OTA_END_ERROR) Serial.println("End Failed");
-    });
-
-  ArduinoOTA.begin();
-}
-
-void setupNFC(){
-  SPI.begin();
-   mfrc522.PCD_Init();
-  mfrc522.PCD_DumpVersionToSerial();
-}
-
-/****************************************************************
-Method to print the reason by which ESP32
-has been awaken from sleep
-*/
-void print_wakeup_reason(){
-  esp_sleep_wakeup_cause_t wakeup_reason;
-
-  wakeup_reason = esp_sleep_get_wakeup_cause();
-
-  switch(wakeup_reason)
-  {
-    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
-    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
-    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
-    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
-    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
-    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
-  }
-}
-//***************************************************************
-
-void deepSleepSETUP(){
-   timer.set_max_delay(AUTOSLEEP_TIME);
-   timer.set();
-   esp_sleep_enable_ext0_wakeup(DEEPSLEEP_WAKEUP_PIN,1); //1 = High, 0 = Low
-}
-
-
-void setupKY040(){
-  encoder.begin();                                                           //set encoders pins as input & enable built-in pullup resistors
-
-  attachInterrupt(digitalPinToInterrupt(PIN_A),  encoderISR,       CHANGE);  //call encoderISR()       every high->low or low->high changes
-  attachInterrupt(digitalPinToInterrupt(BUTTON), encoderButtonISR, FALLING); //call encoderButtonISR() every high->low              changes
-}
-
-void setupGND_SWI(){
-  pinMode(GND_SWI_PIN,OUTPUT);
-  digitalWrite(GND_SWI_PIN,HIGH);
-}
-
-void setup() {
-    Serial.begin(115200);
-    Serial.println("Booting");
-    setupGND_SWI();
-    print_wakeup_reason();  
-    setupKY040();
-    WIFISetup();
-    SpiffServerSetup();
-    loadJSON();
-    DFPlayerSetup();
-    setupNFC();
-    OTASetup();
-    deepSleepSETUP();
-    // myDFPlayer.volume(15);  //Set volume value (0~30).
-    // delay(50);
-    // Serial.println(myDFPlayer.readVolume());
-    myDFPlayer.playMp3Folder(400);
-    for(int i=0;i<20;i++){delay(100);}
-    
-    Serial.println("Setup finished");
-    
-}
-
-
-void loop() {
-    bool knowncard=true;
-    if(getID()){
-        converter.array[0]=readCard[0];converter.array[1]=readCard[1];converter.array[2]=readCard[2];converter.array[3]=readCard[3];
-        if(myCard.cardID!=converter.integer){
-            myCard.cardID=converter.integer;
-            Serial.println("Detected Card");Serial.println(myCard.cardID);
-            knowncard=playCard(myCard.cardID);
-        }
-        if(!knowncard){
-            //play unknown Card
-            Serial.print("unknown CARD: ");
-            myDFPlayer.playMp3Folder(300);
-            for(int i=0;i<21;i++){delay(100);}
-            Serial.println(converter.integer);
-            int n=converter.integer;
-            char digits[15];
-            int c=0;
-            while(n>0 && c< 15){
-              digits[++c]=n%10;
-              n/=10;
-            }
-            digits[++c]=n;
-            while(c>1){
-              int dig=digits[--c];
-              myDFPlayer.playMp3Folder(dig);
-              for(int i=0;i<10;i++){delay(100);}
-              Serial.println(dig);
-            } 
-            //myDFPlayer.playMp3Folder(1);
-        }
-    }
-    if (myDFPlayer.available()) {
-        printDetail(myDFPlayer.readType(), myDFPlayer.read()); //Print the detail message from DFPlayer to handle different errors and states.
-    }
-    if(timer.check()){
-      Serial.println("*******************************");
-      Serial.println("Timer abgelaufen, DEEP SLEEP: ");
-      Serial.println("*******************************");
-      //myDFPlayer.sleep();
-      digitalWrite(GND_SWI_PIN,LOW);
-      myDFPlayer.pause();
-      delay(100);
-      esp_deep_sleep_start();
-    }
-
-    if (position < encoder.getPosition())
-    {
-      //Serial.println(position);
-      myDFPlayer.volumeDown();
-    }
-    if (position > encoder.getPosition())
-    {
-      //Serial.println(position);
-      myDFPlayer.volumeUp();
-    }
-    if(position!=encoder.getPosition()){
-      position=encoder.getPosition();
-    }
-    if (encoder.getPushButton() == true){
-      isplaying?myDFPlayer.pause():myDFPlayer.start();
-      isplaying=!isplaying;
-      //Serial.println(F("PRESSED"));         //(F()) saves string to flash & keeps dynamic memory free
-    }
-    ArduinoOTA.handle();
 }
