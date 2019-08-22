@@ -1,12 +1,14 @@
 //==================================================================
-// TonUINO V3.2.1 of ESP32 Basis
+// ESPTonUINO32 V3.2.1 of ESP32 Basis
+// changed by M.Schwager
+// 2019-08
 // Original V2.0: T. Voss, Erweitert V3.0: C. Ulbrich
 //------------------------------------------------------------------
 // the DIY jukebox (not only) for kids
 //
-// Take an Arduino, an MP3 module, an RFID reader, a micro SD card,
+// Take an ESP32, an MP3 module, an RFID reader, a micro SD card,
 // some cables and stuff and an old (or new) bookshelf speaker...
-// and you have the TonUINO!
+// and you have the ESPTonUINO32!
 //==================================================================
 
 // Used libraries
@@ -67,9 +69,6 @@ WebServer server(80);
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
 
-
-
-
 //========================================================================
 // Added code line to PCD_Init() (MFRC522.cpp) :
 //  PCD_WriteRegister(RFCfgReg, (0x07<<4)); // Set Rx Gain to max
@@ -84,9 +83,15 @@ MFRC522 mfrc522 = MFRC522(SS_PIN, RESET_PIN); // Create instance
 Button pauseButton(buttonPause);
 Button upButton(buttonUp, 100);
 Button downButton(buttonDown, 100);
+
 bool ignorePauseButton = false;
 bool ignoreUpButton = false;
 bool ignoreDownButton = false;
+
+#if defined fiveButtons
+  Button nextButton(buttonNext, 100);
+  Button lastButton(buttonLast, 100);
+#endif
 
 //=======================Functions Declaration==============================
 nfcTagObject myCard;
@@ -585,7 +590,7 @@ int WiFi_AccessPointStart(char* AccessPointNetworkSSID)
   WiFi.mode(WIFI_AP);
   IPAddress apIP(192, 168, 4, 1);    // Here IP is determined
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-  WiFi.softAP("TonUINO");  // Name  des Access Points
+  WiFi.softAP("ESPTonUINO32");  // Name  des Access Points
   delay(500);
   if (debug)  Serial.println("Start AP");
   if (debug)  Serial.print("IP Adresse ");      //Output of current IP server
@@ -769,7 +774,7 @@ void setup() {
   // takeout 3 Strings out of the Non-volatile storage
   String strSSID = preferences.getString("SSID", "");
   String strPassword = preferences.getString("Password", "");
-  String strHostname = preferences.getString("Hostname", String("TonUINO-" + String((uint32_t)chipid)));
+  String strHostname = preferences.getString("Hostname", String("ESPTonUINO32-" + String((uint32_t)chipid)));
   switchOnLeds(19, OK_COLOR );
 
   // convert it to char*

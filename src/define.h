@@ -25,8 +25,12 @@ union ArrayToInteger {
 #define buttonPause 25
 #define buttonUp 26
 #define buttonDown 27
-// #define buttonNext 32
-// #define buttonLast 33
+
+//#define fiveButtons
+#if defined fiveButtons
+   #define buttonNext 32
+   #define buttonLast 33
+#endif
 
 #define LONG_PRESS 1000
 
