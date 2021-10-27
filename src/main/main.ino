@@ -6,9 +6,10 @@
 //------------------------------------------------------------------
 // the DIY jukebox (not only) for kids
 //
-// Take an ESP32, an MP3 module, an RFID reader, a micro SD card,
-// some cables and stuff and an old (or new) bookshelf speaker...
-// and you have the ESPTonUINO32!
+// Take an ESP lolin32, an MP3 module (DFPlayer mini), an RFID reader (RC522), 
+// a micro SD card, Resistor, 3-5 buttons
+// some cables and an old (or new) bookshelf speaker maybe a lipo bat...
+// and you have the ESPTonUINO32 with charge controll and bat power
 //==================================================================
 
 // Used libraries
@@ -91,6 +92,8 @@ bool ignoreDownButton = false;
 #if defined fiveButtons
   Button nextButton(buttonNext, 100);
   Button lastButton(buttonLast, 100);
+  bool nextButton = false;
+  bool lastButton = false;
 #endif
 
 //=======================Functions Declaration==============================
