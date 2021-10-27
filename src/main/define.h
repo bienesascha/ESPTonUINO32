@@ -1,5 +1,5 @@
 //define-files 
-// version 3.1.1 by M.Schwager 2019-08-21
+// version 4.0.1 by Sascha Ludwig 2021-10-27
 //
 /*
 struct card {

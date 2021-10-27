@@ -1,7 +1,7 @@
 //==================================================================
-// ESPTonUINO32 V3.2.1 of ESP32 Basis
-// changed by M.Schwager
-// 2019-08
+// ESPTonUINO32 V4.0.1 of ESP Lolin32
+// changed by Sascha Ludwig
+// 2021-10
 // Original V2.0: T. Voss, Erweitert V3.0: C. Ulbrich
 //------------------------------------------------------------------
 // the DIY jukebox (not only) for kids
